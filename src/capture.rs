@@ -14,6 +14,7 @@ use windows::{
     Win32::UI::WindowsAndMessaging::*,
     Win32::Foundation::*,
 };
+use std::sync::mpsc;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WindowInfo {
@@ -205,6 +206,17 @@ fn run_capture_loop(
     }
 }
 
+/// Frame data sent from capture thread to encode thread
+struct RawFrame {
+    bgra_data: Vec<u8>,
+    width: u32,
+    height: u32,
+    t0: std::time::Instant,
+    t_copy: std::time::Duration,
+    t_map: std::time::Duration,
+    t_readback: std::time::Duration,
+}
+
 fn run_capture_session(
     hwnd: HWND,
     fps: u32,
@@ -230,7 +242,7 @@ fn run_capture_session(
         return Err(Error::new(E_FAIL, "Window has zero size"));
     }
 
-    // Create frame pool with 2 buffers (allows GPU to prepare next frame while we process current)
+    // Create frame pool with 2 buffers
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &direct3d_device,
         DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -242,14 +254,10 @@ fn run_capture_session(
     )?;
 
     let session = frame_pool.CreateCaptureSession(&item)?;
-
-    // Disable yellow capture border (Windows 11+, ignore error on older)
     let _ = session.SetIsBorderRequired(false);
-
-    // Set cursor capture based on config
     let _ = session.SetIsCursorCaptureEnabled(capture_cursor);
 
-    // FrameArrived callback driven: use event to signal new frames
+    // FrameArrived callback
     let frame_event = Arc::new(std::sync::Condvar::new());
     let frame_mutex = Arc::new(std::sync::Mutex::new(false));
     {
@@ -268,155 +276,190 @@ fn run_capture_session(
     session.StartCapture()?;
 
     let frame_interval = std::time::Duration::from_millis((1000 / fps.max(1)) as u64);
-    let mut staging_texture: Option<ID3D11Texture2D> = None;
-    let mut current_title = {
-        config.blocking_read().capture.window_title.clone()
-    };
+    let mut current_title = config.blocking_read().capture.window_title.clone();
 
-    // Pre-allocate reusable pixel buffer
-    let mut bgra_buffer: Vec<u8> = Vec::with_capacity((width * height * 4) as usize);
+    // Double-buffered staging textures
+    let mut staging_textures: [Option<ID3D11Texture2D>; 2] = [None, None];
+    let mut staging_idx: usize = 0;
 
-    // Reusable JPEG compressor
-    let mut compressor = turbojpeg::Compressor::new().expect("failed to create JPEG compressor");
-    let _ = compressor.set_quality(quality as i32);
-    let _ = compressor.set_subsamp(turbojpeg::Subsamp::Sub2x2);
+    // Pre-allocate two pixel buffers for double-buffering
+    let buf_capacity = (width * height * 4) as usize;
+    let mut bgra_buffers: [Vec<u8>; 2] = [
+        Vec::with_capacity(buf_capacity),
+        Vec::with_capacity(buf_capacity),
+    ];
 
-    // Performance logging
-    let mut frame_count: u64 = 0;
-    let mut log_timer = std::time::Instant::now();
-    // Config check interval (avoid locking RwLock every frame)
-    let mut config_check_timer = std::time::Instant::now();
+    // Channel for capture→encode pipeline (bounded=1 to limit latency)
+    let (raw_tx, raw_rx) = mpsc::sync_channel::<RawFrame>(1);
 
-    loop {
-        let loop_start = std::time::Instant::now();
+    // Spawn encode thread
+    let encode_frame_tx = frame_tx.clone();
+    let encode_debug = debug.clone();
+    let encode_handle = std::thread::spawn(move || {
+        let mut compressor = turbojpeg::Compressor::new().expect("failed to create JPEG compressor");
+        let _ = compressor.set_quality(quality as i32);
+        let _ = compressor.set_subsamp(turbojpeg::Subsamp::Sub2x2);
 
-        // Check if config changed (window title) every 1 second
-        if config_check_timer.elapsed() >= std::time::Duration::from_secs(1) {
-            let cfg = config.blocking_read();
-            if cfg.capture.window_title != current_title {
-                session.Close()?;
-                frame_pool.Close()?;
-                return Ok(());
-            }
-            current_title = cfg.capture.window_title.clone();
-            config_check_timer = std::time::Instant::now();
-        }
+        let mut frame_count: u64 = 0;
+        let mut log_timer = std::time::Instant::now();
 
-        // Wait for frame arrival (with timeout to allow config check)
-        {
-            let mut arrived = frame_mutex.lock().unwrap();
-            if !*arrived {
-                let result = frame_event.wait_timeout(arrived, frame_interval).unwrap();
-                arrived = result.0;
-            }
-            *arrived = false;
-        }
-
-        // Try to get a frame
-        if let Ok(frame) = frame_pool.TryGetNextFrame() {
-            let t0 = std::time::Instant::now();
-
-            let surface = frame.Surface()?;
-            let frame_size = frame.ContentSize()?;
-            let fw = frame_size.Width as u32;
-            let fh = frame_size.Height as u32;
-
-            // Get the D3D11 texture from the surface
-            let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
-            let source_texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
-
-            // Create/recreate staging texture if needed
-            let staging = match &staging_texture {
-                Some(t) => {
-                    let mut desc = D3D11_TEXTURE2D_DESC::default();
-                    unsafe { t.GetDesc(&mut desc) };
-                    if desc.Width != fw || desc.Height != fh {
-                        let new_staging = create_staging_texture(&d3d_device, fw, fh)?;
-                        staging_texture = Some(new_staging);
-                        staging_texture.as_ref().unwrap()
-                    } else {
-                        t
-                    }
-                }
-                None => {
-                    staging_texture = Some(create_staging_texture(&d3d_device, fw, fh)?);
-                    staging_texture.as_ref().unwrap()
-                }
-            };
-
-            // Copy from GPU texture to staging texture
-            unsafe {
-                d3d_context.CopyResource(staging, &source_texture);
-            }
-            let t_copy = t0.elapsed();
-
-            // Map staging texture for CPU read
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            unsafe {
-                d3d_context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-            }
-            let t_map = t0.elapsed();
-
-            // Reuse pixel buffer
-            let row_bytes = (fw * 4) as usize;
-            let total_bytes = row_bytes * fh as usize;
-            bgra_buffer.clear();
-            if bgra_buffer.capacity() < total_bytes {
-                bgra_buffer.reserve(total_bytes - bgra_buffer.capacity());
-            }
-
-            // Optimized readback: bulk copy if pitch matches, row-by-row otherwise
-            if mapped.RowPitch as usize == row_bytes {
-                let src = unsafe {
-                    std::slice::from_raw_parts(mapped.pData as *const u8, total_bytes)
-                };
-                bgra_buffer.extend_from_slice(src);
-            } else {
-                for row in 0..fh as usize {
-                    let src = unsafe {
-                        std::slice::from_raw_parts(
-                            (mapped.pData as *const u8).add(row * mapped.RowPitch as usize),
-                            row_bytes,
-                        )
-                    };
-                    bgra_buffer.extend_from_slice(src);
-                }
-            }
-
-            unsafe {
-                d3d_context.Unmap(staging, 0);
-            }
-            let t_readback = t0.elapsed();
-
-            // Encode to JPEG using reusable compressor
-            let jpeg = encode_jpeg_with(&mut compressor, &bgra_buffer, fw, fh);
-            let t_encode = t0.elapsed();
+        while let Ok(raw) = raw_rx.recv() {
+            let jpeg = encode_jpeg_with(&mut compressor, &raw.bgra_data, raw.width, raw.height);
+            let t_encode = raw.t0.elapsed();
 
             if !jpeg.is_empty() {
-                let _ = frame_tx.send(Arc::new(jpeg));
+                let _ = encode_frame_tx.send(Arc::new(jpeg));
             }
 
             frame_count += 1;
             if log_timer.elapsed() >= std::time::Duration::from_secs(3) {
                 let fps_actual = frame_count as f64 / log_timer.elapsed().as_secs_f64();
-                let gpu_copy_ms = t_copy.as_secs_f64() * 1000.0;
-                let map_ms = (t_map - t_copy).as_secs_f64() * 1000.0;
-                let readback_ms = (t_readback - t_map).as_secs_f64() * 1000.0;
-                let encode_ms = (t_encode - t_readback).as_secs_f64() * 1000.0;
-                let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                let gpu_copy_ms = raw.t_copy.as_secs_f64() * 1000.0;
+                let map_ms = (raw.t_map - raw.t_copy).as_secs_f64() * 1000.0;
+                let readback_ms = (raw.t_readback - raw.t_map).as_secs_f64() * 1000.0;
+                let encode_ms = (t_encode - raw.t_readback).as_secs_f64() * 1000.0;
+                let total_ms = raw.t0.elapsed().as_secs_f64() * 1000.0;
                 eprintln!(
-                    "[perf] {fw}x{fh} fps={fps_actual:.1} | gpu_copy={gpu_copy_ms:.1}ms map={map_ms:.1}ms readback={readback_ms:.1}ms encode={encode_ms:.1}ms total={total_ms:.1}ms",
+                    "[perf] {}x{} fps={fps_actual:.1} | gpu_copy={gpu_copy_ms:.1}ms map={map_ms:.1}ms readback={readback_ms:.1}ms encode={encode_ms:.1}ms total={total_ms:.1}ms",
+                    raw.width, raw.height,
                 );
-                debug.push_metrics(fw, fh, fps_actual, gpu_copy_ms, map_ms, readback_ms, encode_ms, total_ms);
+                encode_debug.push_metrics(raw.width, raw.height, fps_actual, gpu_copy_ms, map_ms, readback_ms, encode_ms, total_ms);
                 frame_count = 0;
                 log_timer = std::time::Instant::now();
             }
         }
+    });
 
-        // Maintain frame rate
-        let elapsed = loop_start.elapsed();
-        if elapsed < frame_interval {
-            std::thread::sleep(frame_interval - elapsed);
+    let mut config_check_timer = std::time::Instant::now();
+
+    let result = (|| -> Result<()> {
+        loop {
+            let loop_start = std::time::Instant::now();
+
+            // Check config every 1 second
+            if config_check_timer.elapsed() >= std::time::Duration::from_secs(1) {
+                let cfg = config.blocking_read();
+                if cfg.capture.window_title != current_title {
+                    session.Close()?;
+                    frame_pool.Close()?;
+                    return Ok(());
+                }
+                current_title = cfg.capture.window_title.clone();
+                config_check_timer = std::time::Instant::now();
+            }
+
+            // Wait for frame arrival
+            {
+                let mut arrived = frame_mutex.lock().unwrap();
+                if !*arrived {
+                    let result = frame_event.wait_timeout(arrived, frame_interval).unwrap();
+                    arrived = result.0;
+                }
+                *arrived = false;
+            }
+
+            // Try to get a frame
+            if let Ok(frame) = frame_pool.TryGetNextFrame() {
+                let t0 = std::time::Instant::now();
+
+                let surface = frame.Surface()?;
+                let frame_size = frame.ContentSize()?;
+                let fw = frame_size.Width as u32;
+                let fh = frame_size.Height as u32;
+
+                let access: IDirect3DDxgiInterfaceAccess = surface.cast()?;
+                let source_texture: ID3D11Texture2D = unsafe { access.GetInterface()? };
+
+                // Get or create staging texture (double-buffered)
+                let idx = staging_idx;
+                staging_idx = 1 - staging_idx;
+
+                let staging = match &staging_textures[idx] {
+                    Some(t) => {
+                        let mut desc = D3D11_TEXTURE2D_DESC::default();
+                        unsafe { t.GetDesc(&mut desc) };
+                        if desc.Width != fw || desc.Height != fh {
+                            let new_staging = create_staging_texture(&d3d_device, fw, fh)?;
+                            staging_textures[idx] = Some(new_staging);
+                            staging_textures[idx].as_ref().unwrap()
+                        } else {
+                            t
+                        }
+                    }
+                    None => {
+                        staging_textures[idx] = Some(create_staging_texture(&d3d_device, fw, fh)?);
+                        staging_textures[idx].as_ref().unwrap()
+                    }
+                };
+
+                // GPU copy
+                unsafe {
+                    d3d_context.CopyResource(staging, &source_texture);
+                }
+                let t_copy = t0.elapsed();
+
+                // Map
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                unsafe {
+                    d3d_context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                }
+                let t_map = t0.elapsed();
+
+                // Readback into reusable buffer
+                let row_bytes = (fw * 4) as usize;
+                let total_bytes = row_bytes * fh as usize;
+                let buf = &mut bgra_buffers[idx];
+                buf.clear();
+                if buf.capacity() < total_bytes {
+                    buf.reserve(total_bytes - buf.capacity());
+                }
+
+                if mapped.RowPitch as usize == row_bytes {
+                    let src = unsafe {
+                        std::slice::from_raw_parts(mapped.pData as *const u8, total_bytes)
+                    };
+                    buf.extend_from_slice(src);
+                } else {
+                    for row in 0..fh as usize {
+                        let src = unsafe {
+                            std::slice::from_raw_parts(
+                                (mapped.pData as *const u8).add(row * mapped.RowPitch as usize),
+                                row_bytes,
+                            )
+                        };
+                        buf.extend_from_slice(src);
+                    }
+                }
+
+                unsafe {
+                    d3d_context.Unmap(staging, 0);
+                }
+                let t_readback = t0.elapsed();
+
+                // Send to encode thread (non-blocking: swap buffer ownership)
+                let send_buf = std::mem::replace(buf, Vec::with_capacity(total_bytes));
+                let _ = raw_tx.try_send(RawFrame {
+                    bgra_data: send_buf,
+                    width: fw,
+                    height: fh,
+                    t0,
+                    t_copy,
+                    t_map,
+                    t_readback,
+                });
+            }
+
+            // Frame rate limiting
+            let elapsed = loop_start.elapsed();
+            if elapsed < frame_interval {
+                std::thread::sleep(frame_interval - elapsed);
+            }
         }
-    }
+    })();
+
+    // Drop sender to signal encode thread to exit
+    drop(raw_tx);
+    let _ = encode_handle.join();
+
+    result
 }
