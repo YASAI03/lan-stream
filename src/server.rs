@@ -45,7 +45,7 @@ async fn config_page_handler() -> Html<&'static str> {
 async fn raw_handler(State(state): State<AppState>) -> impl IntoResponse {
     let fps = {
         let cfg = state.config.read().await;
-        cfg.capture.fps
+        cfg.capture.target_fps
     };
     stream::mjpeg_stream(state.frame_rx.clone(), fps).await
 }
@@ -60,9 +60,9 @@ async fn post_config_handler(
     Json(new_config): Json<config::Config>,
 ) -> impl IntoResponse {
     // Validate
-    if new_config.capture.fps == 0 || new_config.capture.fps > 120 {
+    if new_config.capture.target_fps == 0 || new_config.capture.target_fps > 120 {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": "fps must be between 1 and 120"
+            "error": "target_fps must be between 1 and 120"
         }))).into_response();
     }
     if new_config.capture.quality == 0 || new_config.capture.quality > 100 {

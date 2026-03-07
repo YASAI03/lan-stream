@@ -1,7 +1,8 @@
 [capture]
 window_title = "クロック"
-fps = 30
+target_fps = 30
 quality = 80
+capture_cursor = true
 
 [server]
 host = "0.0.0.0"

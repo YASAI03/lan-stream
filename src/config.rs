@@ -14,8 +14,14 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureConfig {
     pub window_title: String,
-    pub fps: u32,
+    pub target_fps: u32,
     pub quality: u8,
+    #[serde(default = "default_capture_cursor")]
+    pub capture_cursor: bool,
+}
+
+fn default_capture_cursor() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,8 +35,9 @@ impl Default for Config {
         Self {
             capture: CaptureConfig {
                 window_title: String::new(),
-                fps: 30,
+                target_fps: 30,
                 quality: 80,
+                capture_cursor: true,
             },
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),

@@ -169,9 +169,9 @@ fn run_capture_loop(
 ) -> Result<()> {
     loop {
         // Read current config
-        let (window_title, fps, quality) = {
+        let (window_title, fps, quality, capture_cursor) = {
             let cfg = config.blocking_read();
-            (cfg.capture.window_title.clone(), cfg.capture.fps, cfg.capture.quality)
+            (cfg.capture.window_title.clone(), cfg.capture.target_fps, cfg.capture.quality, cfg.capture.capture_cursor)
         };
 
         if window_title.is_empty() {
@@ -196,7 +196,7 @@ fn run_capture_loop(
             eprintln!("{msg}");
         }
 
-        match run_capture_session(hwnd, fps, quality, &frame_tx, &config, debug) {
+        match run_capture_session(hwnd, fps, quality, capture_cursor, &frame_tx, &config, debug) {
             Ok(()) => {} // session ended cleanly (config changed)
             Err(e) => {
                 let msg = format!("Capture session error: {e}, restarting...");
@@ -212,6 +212,7 @@ fn run_capture_session(
     hwnd: HWND,
     fps: u32,
     quality: u8,
+    capture_cursor: bool,
     frame_tx: &watch::Sender<Arc<Vec<u8>>>,
     config: &crate::config::SharedConfig,
     debug: &crate::debug::DebugStore,
@@ -247,6 +248,9 @@ fn run_capture_session(
 
     // Disable yellow capture border (Windows 11+, ignore error on older)
     let _ = session.SetIsBorderRequired(false);
+
+    // Set cursor capture based on config
+    let _ = session.SetIsCursorCaptureEnabled(capture_cursor);
 
     session.StartCapture()?;
 
