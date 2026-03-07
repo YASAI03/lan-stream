@@ -1,0 +1,461 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "lan-stream API",
+    "description": "LAN内ウィンドウキャプチャ配信サーバー。Windows Graphics Capture APIでウィンドウをキャプチャし、MJPEG over HTTPでストリーミングする。",
+    "version": "0.1.0",
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "ローカル開発サーバー（デフォルト）"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "summary": "ストリームビューア",
+        "description": "MJPEG ストリームを埋め込んだHTMLビューアページ。ストリームの接続状態をリアルタイム表示し、切断時は自動再接続する。",
+        "operationId": "getStreamViewer",
+        "tags": ["Pages"],
+        "responses": {
+          "200": {
+            "description": "HTMLページ",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/raw": {
+      "get": {
+        "summary": "MJPEG生ストリーム",
+        "description": "multipart/x-mixed-replace 形式のMJPEGストリーム。同時接続は1クライアントまで。2クライアント目は503を返す。ブラウザの<img>タグで直接表示可能。",
+        "operationId": "getRawStream",
+        "tags": ["Stream"],
+        "responses": {
+          "200": {
+            "description": "MJPEGストリーム",
+            "content": {
+              "multipart/x-mixed-replace": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "boundary=frame で区切られたJPEGフレームの連続"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "別のクライアントが既に接続中",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "example": "Another client is already connected"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config": {
+      "get": {
+        "summary": "設定ページ",
+        "description": "キャプチャ設定（ウィンドウ選択、FPS、品質、カーソル表示）とサーバー設定を変更するUIページ。",
+        "operationId": "getConfigPage",
+        "tags": ["Pages"],
+        "responses": {
+          "200": {
+            "description": "HTMLページ",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/debug": {
+      "get": {
+        "summary": "デバッグダッシュボード",
+        "description": "パフォーマンスメトリクス（FPS、フレーム処理時間の内訳）、チャート、サーバーログをリアルタイム表示するダッシュボード。",
+        "operationId": "getDebugPage",
+        "tags": ["Pages"],
+        "responses": {
+          "200": {
+            "description": "HTMLページ",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "summary": "現在の設定を取得",
+        "description": "現在適用されている設定をJSON形式で返す。",
+        "operationId": "getConfig",
+        "tags": ["API"],
+        "responses": {
+          "200": {
+            "description": "現在の設定",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Config"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "設定を更新",
+        "description": "設定を更新し、config.toml に永続化する。キャプチャ設定の変更は即座に反映される。サーバー設定（host/port）の変更は再起動後に反映。",
+        "operationId": "postConfig",
+        "tags": ["API"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Config"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新後の設定",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Config"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "バリデーションエラー",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "invalid_fps": {
+                    "value": {
+                      "error": "target_fps must be between 1 and 120"
+                    }
+                  },
+                  "invalid_quality": {
+                    "value": {
+                      "error": "quality must be between 1 and 100"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "ファイル保存エラー",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/windows": {
+      "get": {
+        "summary": "利用可能なウィンドウ一覧",
+        "description": "現在表示されているウィンドウの一覧をタイトルとHWNDで返す。設定UIのウィンドウ選択に使用。",
+        "operationId": "getWindows",
+        "tags": ["API"],
+        "responses": {
+          "200": {
+            "description": "ウィンドウ一覧",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WindowInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/debug": {
+      "get": {
+        "summary": "デバッグ情報・パフォーマンスメトリクス",
+        "description": "最新のパフォーマンスメトリクス、メトリクス履歴（最大300件、約15分間）、サーバーログ、稼働時間を返す。",
+        "operationId": "getDebug",
+        "tags": ["API"],
+        "responses": {
+          "200": {
+            "description": "デバッグスナップショット",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugSnapshot"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "summary": "ヘルスチェック",
+        "description": "キャプチャの稼働状態、クライアント接続有無、現在のFPSを返す軽量エンドポイント。全ページの共通ヘッダーで使用。",
+        "operationId": "getHealth",
+        "tags": ["API"],
+        "responses": {
+          "200": {
+            "description": "ヘルス情報",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Config": {
+        "type": "object",
+        "required": ["capture", "server"],
+        "properties": {
+          "capture": {
+            "$ref": "#/components/schemas/CaptureConfig"
+          },
+          "server": {
+            "$ref": "#/components/schemas/ServerConfig"
+          }
+        }
+      },
+      "CaptureConfig": {
+        "type": "object",
+        "required": ["window_title", "target_fps", "quality", "capture_cursor"],
+        "properties": {
+          "window_title": {
+            "type": "string",
+            "description": "キャプチャ対象のウィンドウタイトル（部分一致検索）",
+            "example": "メモ帳"
+          },
+          "target_fps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 120,
+            "description": "目標フレームレート",
+            "example": 30
+          },
+          "quality": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "JPEG圧縮品質",
+            "example": 80
+          },
+          "capture_cursor": {
+            "type": "boolean",
+            "description": "マウスカーソルをキャプチャに含めるか",
+            "default": true
+          }
+        }
+      },
+      "ServerConfig": {
+        "type": "object",
+        "required": ["host", "port"],
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "バインドアドレス",
+            "default": "0.0.0.0",
+            "example": "0.0.0.0"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "ポート番号",
+            "default": 8080,
+            "example": 8080
+          }
+        }
+      },
+      "WindowInfo": {
+        "type": "object",
+        "properties": {
+          "hwnd": {
+            "type": "integer",
+            "description": "ウィンドウハンドル"
+          },
+          "title": {
+            "type": "string",
+            "description": "ウィンドウタイトル"
+          }
+        }
+      },
+      "DebugSnapshot": {
+        "type": "object",
+        "properties": {
+          "latest": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/PerfMetrics" },
+              { "type": "null" }
+            ],
+            "description": "最新のパフォーマンスメトリクス（未取得時はnull）"
+          },
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PerfMetrics"
+            },
+            "description": "メトリクス履歴（最大300件、3秒間隔）"
+          },
+          "logs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogEntry"
+            },
+            "description": "サーバーログ（最大500件）"
+          },
+          "uptime_secs": {
+            "type": "number",
+            "description": "サーバー稼働時間（秒）"
+          }
+        }
+      },
+      "PerfMetrics": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "number",
+            "description": "起動からの経過秒数"
+          },
+          "width": {
+            "type": "integer",
+            "description": "キャプチャ解像度（幅）"
+          },
+          "height": {
+            "type": "integer",
+            "description": "キャプチャ解像度（高さ）"
+          },
+          "fps": {
+            "type": "number",
+            "description": "実測FPS"
+          },
+          "gpu_copy_ms": {
+            "type": "number",
+            "description": "GPU→ステージングテクスチャコピー時間（ms）"
+          },
+          "map_ms": {
+            "type": "number",
+            "description": "テクスチャマップ時間（ms）"
+          },
+          "readback_ms": {
+            "type": "number",
+            "description": "CPU読み出し時間（ms）"
+          },
+          "encode_ms": {
+            "type": "number",
+            "description": "JPEGエンコード時間（ms）"
+          },
+          "total_ms": {
+            "type": "number",
+            "description": "1フレーム合計処理時間（ms）"
+          }
+        }
+      },
+      "LogEntry": {
+        "type": "object",
+        "properties": {
+          "timestamp": {
+            "type": "number",
+            "description": "起動からの経過秒数"
+          },
+          "message": {
+            "type": "string",
+            "description": "ログメッセージ"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "capturing": {
+            "type": "boolean",
+            "description": "キャプチャが稼働中か（直近10秒以内にメトリクス更新あり）"
+          },
+          "client_connected": {
+            "type": "boolean",
+            "description": "MJPEGストリームにクライアントが接続中か"
+          },
+          "fps": {
+            "oneOf": [
+              { "type": "number" },
+              { "type": "null" }
+            ],
+            "description": "現在の実測FPS（キャプチャ未稼働時はnull）"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string",
+            "description": "エラーメッセージ"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Pages",
+      "description": "HTMLページ（ブラウザで閲覧）"
+    },
+    {
+      "name": "Stream",
+      "description": "MJPEGストリーム配信"
+    },
+    {
+      "name": "API",
+      "description": "JSON API エンドポイント"
+    }
+  ]
+}
