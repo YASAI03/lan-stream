@@ -131,25 +131,19 @@ fn create_staging_texture(
     }
 }
 
-/// Encode BGRA pixel data to JPEG
+/// Encode BGRA pixel data to JPEG using libjpeg-turbo (SIMD-accelerated)
 fn encode_jpeg(bgra_data: &[u8], width: u32, height: u32, quality: u8) -> Vec<u8> {
-    use image::codecs::jpeg::JpegEncoder;
-    use std::io::Cursor;
-
-    // Convert BGRA to RGB
-    let pixel_count = (width * height) as usize;
-    let mut rgb_data = Vec::with_capacity(pixel_count * 3);
-    for i in 0..pixel_count {
-        let offset = i * 4;
-        rgb_data.push(bgra_data[offset + 2]); // R
-        rgb_data.push(bgra_data[offset + 1]); // G
-        rgb_data.push(bgra_data[offset]);      // B
-    }
-
-    let mut buf = Cursor::new(Vec::new());
-    let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality);
-    let _ = encoder.encode(&rgb_data, width, height, image::ExtendedColorType::Rgb8);
-    buf.into_inner()
+    let image = turbojpeg::Image {
+        pixels: bgra_data,
+        width: width as usize,
+        pitch: width as usize * 4,
+        height: height as usize,
+        format: turbojpeg::PixelFormat::BGRA,
+    };
+    let mut compressor = turbojpeg::Compressor::new().expect("failed to create JPEG compressor");
+    let _ = compressor.set_quality(quality as i32);
+    let _ = compressor.set_subsamp(turbojpeg::Subsamp::Sub2x2);
+    compressor.compress_to_vec(image).unwrap_or_default()
 }
 
 /// Start the capture loop in a dedicated thread.
@@ -250,6 +244,10 @@ fn run_capture_session(
         config.blocking_read().capture.window_title.clone()
     };
 
+    // Performance logging
+    let mut frame_count: u64 = 0;
+    let mut log_timer = std::time::Instant::now();
+
     loop {
         let loop_start = std::time::Instant::now();
 
@@ -267,6 +265,8 @@ fn run_capture_session(
 
         // Try to get a frame
         if let Ok(frame) = frame_pool.TryGetNextFrame() {
+            let t0 = std::time::Instant::now();
+
             let surface = frame.Surface()?;
             let frame_size = frame.ContentSize()?;
             let fw = frame_size.Width as u32;
@@ -299,12 +299,14 @@ fn run_capture_session(
             unsafe {
                 d3d_context.CopyResource(staging, &source_texture);
             }
+            let t_copy = t0.elapsed();
 
             // Map staging texture for CPU read
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             unsafe {
                 d3d_context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             }
+            let t_map = t0.elapsed();
 
             // Copy pixel data (respecting row pitch)
             let row_bytes = (fw * 4) as usize;
@@ -321,11 +323,29 @@ fn run_capture_session(
             unsafe {
                 d3d_context.Unmap(staging, 0);
             }
+            let t_readback = t0.elapsed();
 
             // Encode to JPEG
             let jpeg = encode_jpeg(&bgra_data, fw, fh, quality);
+            let t_encode = t0.elapsed();
+
             if !jpeg.is_empty() {
                 let _ = frame_tx.send(Arc::new(jpeg));
+            }
+
+            frame_count += 1;
+            if log_timer.elapsed() >= std::time::Duration::from_secs(3) {
+                let fps_actual = frame_count as f64 / log_timer.elapsed().as_secs_f64();
+                eprintln!(
+                    "[perf] {fw}x{fh} fps={fps_actual:.1} | gpu_copy={:.1}ms map={:.1}ms readback={:.1}ms encode={:.1}ms total={:.1}ms",
+                    t_copy.as_secs_f64() * 1000.0,
+                    (t_map - t_copy).as_secs_f64() * 1000.0,
+                    (t_readback - t_map).as_secs_f64() * 1000.0,
+                    (t_encode - t_readback).as_secs_f64() * 1000.0,
+                    t0.elapsed().as_secs_f64() * 1000.0,
+                );
+                frame_count = 0;
+                log_timer = std::time::Instant::now();
             }
         }
 
