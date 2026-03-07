@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lan-stream - 設定</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-family: system-ui, sans-serif;
+            padding: 24px;
+            max-width: 640px;
+            margin: 0 auto;
+        }
+        h1 { font-size: 20px; margin-bottom: 20px; }
+        h2 { font-size: 15px; color: #8892b0; margin: 20px 0 10px; text-transform: uppercase; letter-spacing: 1px; }
+        .card {
+            background: #16213e;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+        }
+        label {
+            display: block;
+            font-size: 13px;
+            color: #8892b0;
+            margin-bottom: 4px;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid #2d4059;
+            border-radius: 4px;
+            background: #0f0f23;
+            color: #e0e0e0;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #4a9eff;
+        }
+        .row {
+            display: flex;
+            gap: 12px;
+        }
+        .row > div { flex: 1; }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-primary {
+            background: #4a9eff;
+            color: #fff;
+        }
+        .btn-primary:hover { background: #3a8eef; }
+        .btn-secondary {
+            background: #2d4059;
+            color: #e0e0e0;
+        }
+        .btn-secondary:hover { background: #3d5069; }
+        .actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        #toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 10px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        #toast.show { opacity: 1; }
+        #toast.success { background: #1b5e20; color: #fff; }
+        #toast.error { background: #b71c1c; color: #fff; }
+        nav {
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+        nav a {
+            color: #4a9eff;
+            text-decoration: none;
+            margin-right: 16px;
+        }
+        nav a:hover { text-decoration: underline; }
+        #window-list {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 8px;
+        }
+        .window-item {
+            padding: 6px 10px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .window-item:hover { background: #2d4059; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/">&#9654; ストリーム</a>
+        <a href="/config">&#9881; 設定</a>
+    </nav>
+    <h1>設定</h1>
+
+    <h2>キャプチャ</h2>
+    <div class="card">
+        <label for="window_title">ウィンドウタイトル（部分一致）</label>
+        <input type="text" id="window_title" placeholder="例: メモ帳">
+        <button class="btn-secondary" onclick="showWindows()" style="margin-bottom:12px">ウィンドウ一覧から選択</button>
+        <div id="window-list" style="display:none"></div>
+        <div class="row">
+            <div>
+                <label for="fps">FPS (1-120)</label>
+                <input type="number" id="fps" min="1" max="120">
+            </div>
+            <div>
+                <label for="quality">JPEG品質 (1-100)</label>
+                <input type="number" id="quality" min="1" max="100">
+            </div>
+        </div>
+    </div>
+
+    <h2>サーバー</h2>
+    <div class="card">
+        <div class="row">
+            <div>
+                <label for="host">ホスト</label>
+                <input type="text" id="host">
+            </div>
+            <div>
+                <label for="port">ポート</label>
+                <input type="number" id="port" min="1" max="65535">
+            </div>
+        </div>
+        <p style="font-size:12px;color:#666">※ サーバー設定の変更は再起動後に反映されます</p>
+    </div>
+
+    <div class="actions">
+        <button class="btn-primary" onclick="saveConfig()">保存</button>
+        <button class="btn-secondary" onclick="loadConfig()">リセット</button>
+    </div>
+
+    <div id="toast"></div>
+
+    <script>
+        async function loadConfig() {
+            const res = await fetch('/api/config');
+            const cfg = await res.json();
+            document.getElementById('window_title').value = cfg.capture.window_title;
+            document.getElementById('fps').value = cfg.capture.fps;
+            document.getElementById('quality').value = cfg.capture.quality;
+            document.getElementById('host').value = cfg.server.host;
+            document.getElementById('port').value = cfg.server.port;
+        }
+
+        async function saveConfig() {
+            const cfg = {
+                capture: {
+                    window_title: document.getElementById('window_title').value,
+                    fps: parseInt(document.getElementById('fps').value, 10),
+                    quality: parseInt(document.getElementById('quality').value, 10),
+                },
+                server: {
+                    host: document.getElementById('host').value,
+                    port: parseInt(document.getElementById('port').value, 10),
+                }
+            };
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cfg),
+                });
+                if (res.ok) {
+                    toast('保存しました', 'success');
+                } else {
+                    const data = await res.json();
+                    toast(data.error || '保存に失敗しました', 'error');
+                }
+            } catch (e) {
+                toast('通信エラー', 'error');
+            }
+        }
+
+        async function showWindows() {
+            const list = document.getElementById('window-list');
+            list.style.display = 'block';
+            list.innerHTML = '読み込み中...';
+            try {
+                const res = await fetch('/api/windows');
+                const windows = await res.json();
+                list.innerHTML = windows.map(w =>
+                    `<div class="window-item" onclick="selectWindow(this)" data-title="${w.title.replace(/"/g, '&quot;')}">${w.title}</div>`
+                ).join('');
+            } catch {
+                list.innerHTML = '<div style="color:#b71c1c">取得失敗</div>';
+            }
+        }
+
+        function selectWindow(el) {
+            document.getElementById('window_title').value = el.dataset.title;
+            document.getElementById('window-list').style.display = 'none';
+        }
+
+        function toast(msg, type) {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.className = 'show ' + type;
+            setTimeout(() => { el.className = ''; }, 2500);
+        }
+
+        loadConfig();
+    </script>
+</body>
+</html>

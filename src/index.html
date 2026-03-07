@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lan-stream</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-family: system-ui, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+        header {
+            padding: 12px 20px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #16213e;
+        }
+        header h1 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        #status {
+            font-size: 13px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: #2d4059;
+        }
+        #status.connected { background: #1b5e20; }
+        #status.error { background: #b71c1c; }
+        .container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+            width: 100%;
+        }
+        #stream {
+            max-width: 100%;
+            max-height: calc(100vh - 60px);
+            border-radius: 4px;
+            background: #0f0f23;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>lan-stream</h1>
+        <span id="status">接続中...</span>
+    </header>
+    <div class="container">
+        <img id="stream" src="/raw" alt="Stream">
+    </div>
+    <script>
+        const img = document.getElementById('stream');
+        const status = document.getElementById('status');
+
+        img.onload = function() {
+            status.textContent = '配信中';
+            status.className = 'connected';
+        };
+
+        img.onerror = function() {
+            status.textContent = '切断';
+            status.className = 'error';
+            // Retry after 3 seconds
+            setTimeout(() => {
+                status.textContent = '再接続中...';
+                status.className = '';
+                img.src = '/raw?' + Date.now();
+            }, 3000);
+        };
+    </script>
+</body>
+</html>
