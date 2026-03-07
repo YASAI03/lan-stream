@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lan-stream debug</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;padding:16px}
+h1{font-size:18px;color:#58a6ff;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:16px}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;text-align:center}
+.card .label{font-size:11px;color:#8b949e;text-transform:uppercase;margin-bottom:4px}
+.card .value{font-size:24px;font-weight:700;color:#58a6ff}
+.card .unit{font-size:11px;color:#8b949e}
+.section{margin-bottom:16px}
+.section h2{font-size:14px;color:#8b949e;margin-bottom:8px;border-bottom:1px solid #21262d;padding-bottom:4px}
+canvas{width:100%;height:120px;background:#161b22;border:1px solid #30363d;border-radius:8px}
+#log-container{background:#161b22;border:1px solid #30363d;border-radius:8px;height:300px;overflow-y:auto;font-family:'Cascadia Code','Consolas',monospace;font-size:12px;padding:8px}
+.log-line{padding:2px 0;border-bottom:1px solid #21262d;white-space:pre-wrap;word-break:break-all}
+.log-time{color:#8b949e;margin-right:8px}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.status-dot.ok{background:#3fb950}
+.status-dot.err{background:#f85149}
+#status-line{font-size:12px;color:#8b949e;margin-bottom:12px}
+</style>
+</head>
+<body>
+<h1>&#x1f4ca; lan-stream debug dashboard</h1>
+<div id="status-line"><span class="status-dot" id="status-dot"></span><span id="status-text">connecting...</span></div>
+
+<div class="grid">
+  <div class="card"><div class="label">FPS</div><div class="value" id="m-fps">--</div></div>
+  <div class="card"><div class="label">Resolution</div><div class="value" id="m-res" style="font-size:16px">--</div></div>
+  <div class="card"><div class="label">Total</div><div class="value" id="m-total">--</div><div class="unit">ms</div></div>
+  <div class="card"><div class="label">GPU Copy</div><div class="value" id="m-copy">--</div><div class="unit">ms</div></div>
+  <div class="card"><div class="label">Map</div><div class="value" id="m-map">--</div><div class="unit">ms</div></div>
+  <div class="card"><div class="label">Readback</div><div class="value" id="m-read">--</div><div class="unit">ms</div></div>
+  <div class="card"><div class="label">Encode</div><div class="value" id="m-enc">--</div><div class="unit">ms</div></div>
+  <div class="card"><div class="label">Uptime</div><div class="value" id="m-uptime" style="font-size:16px">--</div></div>
+</div>
+
+<div class="section">
+  <h2>FPS History</h2>
+  <canvas id="chart-fps"></canvas>
+</div>
+
+<div class="section">
+  <h2>Frame Time (ms)</h2>
+  <canvas id="chart-time"></canvas>
+</div>
+
+<div class="section">
+  <h2>Server Log</h2>
+  <div id="log-container"></div>
+</div>
+
+<script>
+const POLL_MS = 1000;
+let lastLogCount = 0;
+
+function setText(id, v) { document.getElementById(id).textContent = v; }
+
+function formatUptime(s) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  return (h > 0 ? h + 'h ' : '') + m + 'm ' + sec + 's';
+}
+
+function drawChart(canvasId, data, label, color, maxVal) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (data.length < 2) return;
+
+  // Auto scale
+  if (!maxVal) maxVal = Math.max(...data) * 1.2 || 1;
+
+  // Grid lines
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 3; i++) {
+    const y = H - (H * (i / 4));
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    ctx.fillStyle = '#484f58';
+    ctx.font = '10px sans-serif';
+    ctx.fillText((maxVal * i / 4).toFixed(1), 4, y - 2);
+  }
+
+  // Line
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  const step = W / (data.length - 1);
+  for (let i = 0; i < data.length; i++) {
+    const x = i * step;
+    const y = H - (data[i] / maxVal) * (H - 10);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Latest value
+  ctx.fillStyle = color;
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillText(label + ': ' + data[data.length - 1].toFixed(1), W - 150, 14);
+}
+
+function updateLogs(logs) {
+  if (logs.length === lastLogCount) return;
+  const c = document.getElementById('log-container');
+  const wasAtBottom = c.scrollTop + c.clientHeight >= c.scrollHeight - 20;
+  // Incremental append
+  const newLogs = logs.slice(lastLogCount);
+  for (const entry of newLogs) {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    const t = entry.timestamp;
+    const ts = Math.floor(t / 60) + ':' + ('0' + Math.floor(t % 60)).slice(-2);
+    div.innerHTML = '<span class="log-time">[' + ts + ']</span>' + escapeHtml(entry.message);
+    c.appendChild(div);
+  }
+  lastLogCount = logs.length;
+  // Trim DOM if too many
+  while (c.children.length > 500) c.removeChild(c.firstChild);
+  if (wasAtBottom) c.scrollTop = c.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/debug');
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+
+    document.getElementById('status-dot').className = 'status-dot ok';
+    setText('status-text', 'connected');
+
+    if (data.latest) {
+      const m = data.latest;
+      setText('m-fps', m.fps.toFixed(1));
+      setText('m-res', m.width + 'x' + m.height);
+      setText('m-total', m.total_ms.toFixed(1));
+      setText('m-copy', m.gpu_copy_ms.toFixed(1));
+      setText('m-map', m.map_ms.toFixed(1));
+      setText('m-read', m.readback_ms.toFixed(1));
+      setText('m-enc', m.encode_ms.toFixed(1));
+    }
+    setText('m-uptime', formatUptime(data.uptime_secs));
+
+    const hist = data.history;
+    drawChart('chart-fps', hist.map(h => h.fps), 'FPS', '#3fb950');
+    drawChart('chart-time', hist.map(h => h.total_ms), 'Total', '#f0883e');
+
+    updateLogs(data.logs);
+  } catch (e) {
+    document.getElementById('status-dot').className = 'status-dot err';
+    setText('status-text', 'disconnected: ' + e.message);
+  }
+}
+
+setInterval(poll, POLL_MS);
+poll();
+</script>
+</body>
+</html>

@@ -11,12 +11,14 @@ use tokio::sync::watch;
 
 use crate::capture;
 use crate::config::{self, SharedConfig};
+use crate::debug::DebugStore;
 use crate::stream;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: SharedConfig,
     pub frame_rx: watch::Receiver<Arc<Vec<u8>>>,
+    pub debug: DebugStore,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -24,8 +26,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/", get(index_handler))
         .route("/raw", get(raw_handler))
         .route("/config", get(config_page_handler))
+        .route("/debug", get(debug_page_handler))
         .route("/api/config", get(get_config_handler).post(post_config_handler))
         .route("/api/windows", get(windows_handler))
+        .route("/api/debug", get(debug_handler))
         .with_state(state)
 }
 
@@ -85,4 +89,12 @@ async fn post_config_handler(
 async fn windows_handler() -> impl IntoResponse {
     let windows = capture::enum_windows();
     Json(windows)
+}
+
+async fn debug_page_handler() -> Html<&'static str> {
+    Html(include_str!("debug_page.html"))
+}
+
+async fn debug_handler(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.debug.snapshot())
 }

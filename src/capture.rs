@@ -151,10 +151,12 @@ fn encode_jpeg(bgra_data: &[u8], width: u32, height: u32, quality: u8) -> Vec<u8
 pub fn start_capture_thread(
     frame_tx: watch::Sender<Arc<Vec<u8>>>,
     config: crate::config::SharedConfig,
+    debug: crate::debug::DebugStore,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         // Graphics Capture API requires a dispatcher queue on this thread
-        if let Err(e) = run_capture_loop(frame_tx, config) {
+        if let Err(e) = run_capture_loop(frame_tx, config, &debug) {
+            debug.push_log(format!("Capture error: {e}"));
             eprintln!("Capture error: {e}");
         }
     })
@@ -163,6 +165,7 @@ pub fn start_capture_thread(
 fn run_capture_loop(
     frame_tx: watch::Sender<Arc<Vec<u8>>>,
     config: crate::config::SharedConfig,
+    debug: &crate::debug::DebugStore,
 ) -> Result<()> {
     loop {
         // Read current config
@@ -179,18 +182,26 @@ fn run_capture_loop(
         let hwnd = match find_window_by_title(&window_title) {
             Some(h) => h,
             None => {
-                eprintln!("Window not found: \"{window_title}\", retrying...");
+                let msg = format!("Window not found: \"{window_title}\", retrying...");
+                debug.push_log(msg.clone());
+                eprintln!("{msg}");
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 continue;
             }
         };
 
-        eprintln!("Capturing window: \"{window_title}\"");
+        {
+            let msg = format!("Capturing window: \"{window_title}\"");
+            debug.push_log(msg.clone());
+            eprintln!("{msg}");
+        }
 
-        match run_capture_session(hwnd, fps, quality, &frame_tx, &config) {
+        match run_capture_session(hwnd, fps, quality, &frame_tx, &config, debug) {
             Ok(()) => {} // session ended cleanly (config changed)
             Err(e) => {
-                eprintln!("Capture session error: {e}, restarting...");
+                let msg = format!("Capture session error: {e}, restarting...");
+                debug.push_log(msg.clone());
+                eprintln!("{msg}");
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
@@ -203,6 +214,7 @@ fn run_capture_session(
     quality: u8,
     frame_tx: &watch::Sender<Arc<Vec<u8>>>,
     config: &crate::config::SharedConfig,
+    debug: &crate::debug::DebugStore,
 ) -> Result<()> {
     let (d3d_device, d3d_context) = create_d3d11_device()?;
     let direct3d_device = create_direct3d_device(&d3d_device)?;
@@ -336,14 +348,15 @@ fn run_capture_session(
             frame_count += 1;
             if log_timer.elapsed() >= std::time::Duration::from_secs(3) {
                 let fps_actual = frame_count as f64 / log_timer.elapsed().as_secs_f64();
+                let gpu_copy_ms = t_copy.as_secs_f64() * 1000.0;
+                let map_ms = (t_map - t_copy).as_secs_f64() * 1000.0;
+                let readback_ms = (t_readback - t_map).as_secs_f64() * 1000.0;
+                let encode_ms = (t_encode - t_readback).as_secs_f64() * 1000.0;
+                let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 eprintln!(
-                    "[perf] {fw}x{fh} fps={fps_actual:.1} | gpu_copy={:.1}ms map={:.1}ms readback={:.1}ms encode={:.1}ms total={:.1}ms",
-                    t_copy.as_secs_f64() * 1000.0,
-                    (t_map - t_copy).as_secs_f64() * 1000.0,
-                    (t_readback - t_map).as_secs_f64() * 1000.0,
-                    (t_encode - t_readback).as_secs_f64() * 1000.0,
-                    t0.elapsed().as_secs_f64() * 1000.0,
+                    "[perf] {fw}x{fh} fps={fps_actual:.1} | gpu_copy={gpu_copy_ms:.1}ms map={map_ms:.1}ms readback={readback_ms:.1}ms encode={encode_ms:.1}ms total={total_ms:.1}ms",
                 );
+                debug.push_metrics(fw, fh, fps_actual, gpu_copy_ms, map_ms, readback_ms, encode_ms, total_ms);
                 frame_count = 0;
                 log_timer = std::time::Instant::now();
             }
