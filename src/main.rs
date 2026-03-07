@@ -9,6 +9,16 @@ use tokio::sync::{watch, RwLock};
 
 #[tokio::main]
 async fn main() {
+    loop {
+        if !run_server().await {
+            break;
+        }
+        eprintln!("Restarting server...");
+    }
+}
+
+/// Run the server. Returns `true` if a restart was requested.
+async fn run_server() -> bool {
     let cfg = config::load_config();
     let host = cfg.server.host.clone();
     let port = cfg.server.port;
@@ -16,6 +26,7 @@ async fn main() {
     let shared_config: config::SharedConfig = Arc::new(RwLock::new(cfg));
 
     let debug_store = debug::DebugStore::new();
+    let restart_signal = Arc::new(tokio::sync::Notify::new());
 
     // watch channel: initial empty frame
     let (frame_tx, frame_rx) = watch::channel(Arc::new(Vec::<u8>::new()));
@@ -32,6 +43,7 @@ async fn main() {
         config: shared_config,
         frame_rx,
         debug: debug_store,
+        restart_signal: restart_signal.clone(),
     };
     let app = server::create_router(state);
 
@@ -42,7 +54,13 @@ async fn main() {
         .await
         .expect("Failed to bind address");
 
+    let signal = restart_signal.clone();
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            signal.notified().await;
+        })
         .await
         .expect("Server error");
+
+    true
 }

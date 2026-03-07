@@ -22,6 +22,7 @@
         .health-dot { width:8px; height:8px; border-radius:50%; background:#666; }
         .health-dot.capturing { background:#3fb950; }
         .health-dot.streaming { background:#3fb950; animation:pulse 2s infinite; }
+        .health-dot.warning { background:#d29922; }
         .health-dot.stopped { background:#f85149; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
         #health-text { font-size:12px; color:#8b949e; }
@@ -262,12 +263,13 @@
                     const dot=document.getElementById('health-dot');
                     const txt=document.getElementById('health-text');
                     if(h.capturing){
+                        const fpsBelowTarget=h.fps && h.target_fps && h.fps < h.target_fps * 0.9;
                         if(h.client_connected){
-                            dot.className='health-dot streaming';
-                            txt.textContent='配信中'+(h.fps?' ('+h.fps.toFixed(1)+' fps)':'');
+                            dot.className='health-dot '+(fpsBelowTarget?'warning':'streaming');
+                            txt.textContent='配信中'+(h.fps?' ('+h.fps.toFixed(1)+'/'+h.target_fps+' fps)':'');
                         }else{
-                            dot.className='health-dot capturing';
-                            txt.textContent='キャプチャ中'+(h.fps?' ('+h.fps.toFixed(1)+' fps)':'');
+                            dot.className='health-dot '+(fpsBelowTarget?'warning':'capturing');
+                            txt.textContent='キャプチャ中'+(h.fps?' ('+h.fps.toFixed(1)+'/'+h.target_fps+' fps)':'');
                         }
                     }else{
                         dot.className='health-dot stopped';
@@ -280,6 +282,7 @@
             }
             setInterval(pollHealth,3000);
             pollHealth();
+            window.addEventListener('online',()=>location.reload());
         })();
     </script>
 </body>

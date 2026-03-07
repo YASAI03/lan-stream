@@ -1,8 +1,8 @@
 [capture]
-window_title = "クロック"
-target_fps = 30
+window_title = "SSOverlay"
+target_fps = 60
 quality = 80
-capture_cursor = true
+capture_cursor = false
 
 [server]
 host = "0.0.0.0"
