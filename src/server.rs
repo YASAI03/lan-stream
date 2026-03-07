@@ -30,6 +30,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/config", get(get_config_handler).post(post_config_handler))
         .route("/api/windows", get(windows_handler))
         .route("/api/debug", get(debug_handler))
+        .route("/api/health", get(health_handler))
         .with_state(state)
 }
 
@@ -97,4 +98,18 @@ async fn debug_page_handler() -> Html<&'static str> {
 
 async fn debug_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(state.debug.snapshot())
+}
+
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let snapshot = state.debug.snapshot();
+    let capturing = snapshot.latest.as_ref().map_or(false, |m| {
+        snapshot.uptime_secs - m.timestamp < 10.0
+    });
+    let client_connected = stream::is_stream_active();
+    let fps = snapshot.latest.as_ref().map(|m| m.fps);
+    Json(serde_json::json!({
+        "capturing": capturing,
+        "client_connected": client_connected,
+        "fps": fps,
+    }))
 }

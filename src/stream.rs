@@ -9,6 +9,10 @@ static STREAM_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const BOUNDARY: &str = "frame";
 
+pub fn is_stream_active() -> bool {
+    STREAM_ACTIVE.load(Ordering::SeqCst)
+}
+
 /// MJPEG stream handler. Only one client at a time.
 pub async fn mjpeg_stream(
     frame_rx: watch::Receiver<Arc<Vec<u8>>>,
