@@ -70,6 +70,7 @@
             </nav>
         </div>
         <div class="header-right">
+            <span id="ping-text" style="font-size:12px;color:#8b949e;margin-right:12px"></span>
             <span class="health-dot" id="health-dot"></span>
             <span id="health-text">確認中...</span>
         </div>
@@ -124,6 +125,20 @@
             setInterval(pollHealth,3000);
             pollHealth();
             window.addEventListener('online',()=>location.reload());
+        })();
+        (function(){
+            async function measurePing(){
+                try{
+                    const t0=performance.now();
+                    await fetch('/api/ping');
+                    const rtt=Math.round(performance.now()-t0);
+                    document.getElementById('ping-text').textContent=rtt+'ms';
+                }catch(e){
+                    document.getElementById('ping-text').textContent='--';
+                }
+            }
+            setInterval(measurePing,3000);
+            measurePing();
         })();
     </script>
 </body>

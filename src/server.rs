@@ -32,6 +32,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/windows", get(windows_handler))
         .route("/api/debug", get(debug_handler))
         .route("/api/health", get(health_handler))
+        .route("/api/ping", get(ping_handler))
         .with_state(state)
 }
 
@@ -118,6 +119,10 @@ async fn debug_page_handler() -> Html<&'static str> {
 
 async fn debug_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(state.debug.snapshot())
+}
+
+async fn ping_handler() -> impl IntoResponse {
+    Json(serde_json::json!({ "pong": true }))
 }
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
