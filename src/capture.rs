@@ -131,8 +131,8 @@ fn create_staging_texture(
     }
 }
 
-/// Encode BGRA pixel data to JPEG using libjpeg-turbo (SIMD-accelerated)
-fn encode_jpeg(bgra_data: &[u8], width: u32, height: u32, quality: u8) -> Vec<u8> {
+/// Encode BGRA pixel data to JPEG using a pre-created compressor
+fn encode_jpeg_with(compressor: &mut turbojpeg::Compressor, bgra_data: &[u8], width: u32, height: u32) -> Vec<u8> {
     let image = turbojpeg::Image {
         pixels: bgra_data,
         width: width as usize,
@@ -140,9 +140,6 @@ fn encode_jpeg(bgra_data: &[u8], width: u32, height: u32, quality: u8) -> Vec<u8
         height: height as usize,
         format: turbojpeg::PixelFormat::BGRA,
     };
-    let mut compressor = turbojpeg::Compressor::new().expect("failed to create JPEG compressor");
-    let _ = compressor.set_quality(quality as i32);
-    let _ = compressor.set_subsamp(turbojpeg::Subsamp::Sub2x2);
     compressor.compress_to_vec(image).unwrap_or_default()
 }
 
@@ -233,11 +230,11 @@ fn run_capture_session(
         return Err(Error::new(E_FAIL, "Window has zero size"));
     }
 
-    // Create frame pool
+    // Create frame pool with 2 buffers (allows GPU to prepare next frame while we process current)
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &direct3d_device,
         DirectXPixelFormat::B8G8R8A8UIntNormalized,
-        1,
+        2,
         SizeInt32 {
             Width: size.Width,
             Height: size.Height,
@@ -252,6 +249,22 @@ fn run_capture_session(
     // Set cursor capture based on config
     let _ = session.SetIsCursorCaptureEnabled(capture_cursor);
 
+    // FrameArrived callback driven: use event to signal new frames
+    let frame_event = Arc::new(std::sync::Condvar::new());
+    let frame_mutex = Arc::new(std::sync::Mutex::new(false));
+    {
+        let event = frame_event.clone();
+        let mutex = frame_mutex.clone();
+        frame_pool.FrameArrived(&windows::Foundation::TypedEventHandler::new(
+            move |_pool, _args| {
+                let mut arrived = mutex.lock().unwrap();
+                *arrived = true;
+                event.notify_one();
+                Ok(())
+            },
+        ))?;
+    }
+
     session.StartCapture()?;
 
     let frame_interval = std::time::Duration::from_millis((1000 / fps.max(1)) as u64);
@@ -260,23 +273,43 @@ fn run_capture_session(
         config.blocking_read().capture.window_title.clone()
     };
 
+    // Pre-allocate reusable pixel buffer
+    let mut bgra_buffer: Vec<u8> = Vec::with_capacity((width * height * 4) as usize);
+
+    // Reusable JPEG compressor
+    let mut compressor = turbojpeg::Compressor::new().expect("failed to create JPEG compressor");
+    let _ = compressor.set_quality(quality as i32);
+    let _ = compressor.set_subsamp(turbojpeg::Subsamp::Sub2x2);
+
     // Performance logging
     let mut frame_count: u64 = 0;
     let mut log_timer = std::time::Instant::now();
+    // Config check interval (avoid locking RwLock every frame)
+    let mut config_check_timer = std::time::Instant::now();
 
     loop {
         let loop_start = std::time::Instant::now();
 
-        // Check if config changed (window title)
-        {
+        // Check if config changed (window title) every 1 second
+        if config_check_timer.elapsed() >= std::time::Duration::from_secs(1) {
             let cfg = config.blocking_read();
             if cfg.capture.window_title != current_title {
-                // Config changed, restart capture session
                 session.Close()?;
                 frame_pool.Close()?;
                 return Ok(());
             }
             current_title = cfg.capture.window_title.clone();
+            config_check_timer = std::time::Instant::now();
+        }
+
+        // Wait for frame arrival (with timeout to allow config check)
+        {
+            let mut arrived = frame_mutex.lock().unwrap();
+            if !*arrived {
+                let result = frame_event.wait_timeout(arrived, frame_interval).unwrap();
+                arrived = result.0;
+            }
+            *arrived = false;
         }
 
         // Try to get a frame
@@ -324,16 +357,30 @@ fn run_capture_session(
             }
             let t_map = t0.elapsed();
 
-            // Copy pixel data (respecting row pitch)
+            // Reuse pixel buffer
             let row_bytes = (fw * 4) as usize;
-            let mut bgra_data = Vec::with_capacity((fw * fh * 4) as usize);
-            for row in 0..fh as usize {
-                let src =
-                    unsafe { std::slice::from_raw_parts(
-                        (mapped.pData as *const u8).add(row * mapped.RowPitch as usize),
-                        row_bytes,
-                    ) };
-                bgra_data.extend_from_slice(src);
+            let total_bytes = row_bytes * fh as usize;
+            bgra_buffer.clear();
+            if bgra_buffer.capacity() < total_bytes {
+                bgra_buffer.reserve(total_bytes - bgra_buffer.capacity());
+            }
+
+            // Optimized readback: bulk copy if pitch matches, row-by-row otherwise
+            if mapped.RowPitch as usize == row_bytes {
+                let src = unsafe {
+                    std::slice::from_raw_parts(mapped.pData as *const u8, total_bytes)
+                };
+                bgra_buffer.extend_from_slice(src);
+            } else {
+                for row in 0..fh as usize {
+                    let src = unsafe {
+                        std::slice::from_raw_parts(
+                            (mapped.pData as *const u8).add(row * mapped.RowPitch as usize),
+                            row_bytes,
+                        )
+                    };
+                    bgra_buffer.extend_from_slice(src);
+                }
             }
 
             unsafe {
@@ -341,8 +388,8 @@ fn run_capture_session(
             }
             let t_readback = t0.elapsed();
 
-            // Encode to JPEG
-            let jpeg = encode_jpeg(&bgra_data, fw, fh, quality);
+            // Encode to JPEG using reusable compressor
+            let jpeg = encode_jpeg_with(&mut compressor, &bgra_buffer, fw, fh);
             let t_encode = t0.elapsed();
 
             if !jpeg.is_empty() {
