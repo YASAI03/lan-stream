@@ -192,9 +192,9 @@ fn run_capture_loop(
 ) -> Result<()> {
     loop {
         // Read current config
-        let (window_title, fps, quality, capture_cursor) = {
+        let (window_title, fps, capture_cursor) = {
             let cfg = config.blocking_read();
-            (cfg.capture.window_title.clone(), cfg.capture.target_fps, cfg.capture.quality, cfg.capture.capture_cursor)
+            (cfg.capture.window_title.clone(), cfg.capture.target_fps, cfg.capture.capture_cursor)
         };
 
         if window_title.is_empty() {
@@ -219,7 +219,7 @@ fn run_capture_loop(
             eprintln!("{msg}");
         }
 
-        match run_capture_session(hwnd, fps, quality, capture_cursor, &frame_tx, &config, debug) {
+        match run_capture_session(hwnd, fps, capture_cursor, &frame_tx, &config, debug) {
             Ok(()) => {} // session ended cleanly (config changed)
             Err(e) => {
                 let msg = format!("Capture session error: {e}, restarting...");
@@ -245,7 +245,6 @@ struct RawFrame {
 fn run_capture_session(
     hwnd: HWND,
     fps: u32,
-    _quality: u8,
     capture_cursor: bool,
     frame_tx: &watch::Sender<Arc<Vec<u8>>>,
     config: &crate::config::SharedConfig,

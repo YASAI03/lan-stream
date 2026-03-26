@@ -1,7 +1,6 @@
 [capture]
 window_title = "SSOverlay"
 target_fps = 30
-quality = 60
 capture_cursor = false
 
 [server]

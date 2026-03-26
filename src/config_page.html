@@ -144,16 +144,8 @@
         <input type="text" id="window_title" placeholder="例: メモ帳">
         <button class="btn-secondary" onclick="showWindows()" style="margin-bottom:12px">ウィンドウ一覧から選択</button>
         <div id="window-list" style="display:none"></div>
-        <div class="row">
-            <div>
-                <label for="target_fps">ターゲットFPS (1-120)</label>
-                <input type="number" id="target_fps" min="1" max="120">
-            </div>
-            <div>
-                <label for="quality">JPEG品質 (1-100)</label>
-                <input type="number" id="quality" min="1" max="100">
-            </div>
-        </div>
+        <label for="target_fps">ターゲットFPS (1-120)</label>
+        <input type="number" id="target_fps" min="1" max="120">
         <div style="margin-top:4px">
             <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
                 <input type="checkbox" id="capture_cursor" style="width:auto;margin:0">
@@ -191,7 +183,6 @@
             const cfg = await res.json();
             document.getElementById('window_title').value = cfg.capture.window_title;
             document.getElementById('target_fps').value = cfg.capture.target_fps;
-            document.getElementById('quality').value = cfg.capture.quality;
             document.getElementById('capture_cursor').checked = cfg.capture.capture_cursor;
             document.getElementById('host').value = cfg.server.host;
             document.getElementById('port').value = cfg.server.port;
@@ -202,7 +193,6 @@
                 capture: {
                     window_title: document.getElementById('window_title').value,
                     target_fps: parseInt(document.getElementById('target_fps').value, 10),
-                    quality: parseInt(document.getElementById('quality').value, 10),
                     capture_cursor: document.getElementById('capture_cursor').checked,
                 },
                 server: {

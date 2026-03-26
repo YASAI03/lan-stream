@@ -73,12 +73,6 @@ async fn post_config_handler(
             "error": "target_fps must be between 1 and 120"
         }))).into_response();
     }
-    if new_config.capture.quality == 0 || new_config.capture.quality > 100 {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": "quality must be between 1 and 100"
-        }))).into_response();
-    }
-
     // Check if restart is needed (target_fps changed)
     let needs_restart = {
         let cfg = state.config.read().await;

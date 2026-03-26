@@ -15,7 +15,6 @@ pub struct Config {
 pub struct CaptureConfig {
     pub window_title: String,
     pub target_fps: u32,
-    pub quality: u8,
     #[serde(default = "default_capture_cursor")]
     pub capture_cursor: bool,
 }
@@ -36,7 +35,6 @@ impl Default for Config {
             capture: CaptureConfig {
                 window_title: String::new(),
                 target_fps: 30,
-                quality: 80,
                 capture_cursor: true,
             },
             server: ServerConfig {
