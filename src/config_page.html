@@ -280,7 +280,7 @@
                 try{
                     const t0=performance.now();
                     await fetch('/api/ping');
-                    const rtt=Math.round(performance.now()-t0);
+                    const rtt=(performance.now()-t0).toFixed(2);
                     document.getElementById('ping-text').textContent='server: '+rtt+'ms';
                 }catch(e){
                     document.getElementById('ping-text').textContent='server: --';
