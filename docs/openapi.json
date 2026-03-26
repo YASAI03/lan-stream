@@ -5,7 +5,7 @@
     "description": "LAN内ウィンドウキャプチャ配信サーバー。Windows Graphics Capture APIでウィンドウをキャプチャし、QOI over WebSocketでストリーミングする。",
     "version": "0.1.0",
     "license": {
-      "name": "MIT"
+      "name": "MIT OR Apache-2.0"
     }
   },
   "servers": [

@@ -124,4 +124,9 @@ port = 8080                  # ポート番号
 
 ## ライセンス
 
-MIT
+MIT OR Apache-2.0 のデュアルライセンスで提供されます。
+
+- [MIT License](LICENSE-MIT)
+- [Apache License 2.0](LICENSE-APACHE)
+
+いずれかを選択して利用できます。
