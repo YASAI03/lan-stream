@@ -70,6 +70,7 @@
             </nav>
         </div>
         <div class="header-right">
+            <span id="renderer-text" style="font-size:11px;color:#4a9eff;margin-right:8px;background:rgba(74,158,255,0.1);padding:2px 6px;border-radius:3px"></span>
             <span id="ping-text" style="font-size:12px;color:#8b949e;margin-right:12px">server: -- | decode: --</span>
             <span class="health-dot" id="health-dot"></span>
             <span id="health-text">確認中...</span>
@@ -132,8 +133,59 @@
         }
 
         const canvas = document.getElementById('stream');
-        const ctx = canvas.getContext('2d');
         const streamStatus = document.getElementById('stream-status');
+
+        // Try WebGL, fall back to Canvas2D
+        let renderer;
+        (function initRenderer() {
+            const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false });
+            if (gl) {
+                const vs = gl.createShader(gl.VERTEX_SHADER);
+                gl.shaderSource(vs, 'attribute vec2 p;varying vec2 v;void main(){v=p*.5+.5;v.y=1.-v.y;gl_Position=vec4(p,0,1);}');
+                gl.compileShader(vs);
+                const fs = gl.createShader(gl.FRAGMENT_SHADER);
+                gl.shaderSource(fs, 'precision mediump float;varying vec2 v;uniform sampler2D t;void main(){gl_FragColor=texture2D(t,v);}');
+                gl.compileShader(fs);
+                const prog = gl.createProgram();
+                gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+                gl.linkProgram(prog); gl.useProgram(prog);
+                const buf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+                const loc = gl.getAttribLocation(prog, 'p');
+                gl.enableVertexAttribArray(loc);
+                gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+                const tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                renderer = {
+                    name: 'WebGL',
+                    draw(w, h, data) {
+                        if (canvas.width !== w || canvas.height !== h) {
+                            canvas.width = w; canvas.height = h;
+                            gl.viewport(0, 0, w, h);
+                        }
+                        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+                        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                    }
+                };
+            } else {
+                const ctx = canvas.getContext('2d');
+                renderer = {
+                    name: 'Canvas2D',
+                    draw(w, h, data) {
+                        if (canvas.width !== w || canvas.height !== h) {
+                            canvas.width = w; canvas.height = h;
+                        }
+                        ctx.putImageData(new ImageData(data, w, h), 0, 0);
+                    }
+                };
+            }
+        })();
+        document.getElementById('renderer-text').textContent = renderer.name;
 
         let lastDecodeMs = 0;
 
@@ -151,12 +203,7 @@
                 const t0 = performance.now();
                 const img = decodeQOI(e.data);
                 if (!img) return;
-                if (canvas.width !== img.width || canvas.height !== img.height) {
-                    canvas.width = img.width;
-                    canvas.height = img.height;
-                }
-                const imageData = new ImageData(img.data, img.width, img.height);
-                ctx.putImageData(imageData, 0, 0);
+                renderer.draw(img.width, img.height, img.data);
                 lastDecodeMs = performance.now() - t0;
             };
 
