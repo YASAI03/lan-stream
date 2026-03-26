@@ -2,6 +2,7 @@ use std::sync::Arc;
 use axum::{
     Router,
     extract::State,
+    extract::ws::WebSocketUpgrade,
     response::{Html, IntoResponse},
     routing::get,
     Json,
@@ -26,6 +27,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index_handler))
         .route("/raw", get(raw_handler))
+        .route("/ws", get(ws_handler))
         .route("/config", get(config_page_handler))
         .route("/debug", get(debug_page_handler))
         .route("/api/config", get(get_config_handler).post(post_config_handler))
@@ -44,12 +46,16 @@ async fn config_page_handler() -> Html<&'static str> {
     Html(include_str!("config_page.html"))
 }
 
-async fn raw_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn raw_handler() -> Html<&'static str> {
+    Html(include_str!("raw_page.html"))
+}
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     let fps = {
         let cfg = state.config.read().await;
         cfg.capture.target_fps
     };
-    stream::mjpeg_stream(state.frame_rx.clone(), fps).await
+    ws.on_upgrade(move |socket| stream::ws_stream(socket, state.frame_rx.clone(), fps))
 }
 
 async fn get_config_handler(State(state): State<AppState>) -> impl IntoResponse {

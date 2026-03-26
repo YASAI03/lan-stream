@@ -132,16 +132,41 @@ fn create_staging_texture(
     }
 }
 
-/// Encode BGRA pixel data to JPEG using a pre-created compressor
-fn encode_jpeg_with(compressor: &mut turbojpeg::Compressor, bgra_data: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let image = turbojpeg::Image {
-        pixels: bgra_data,
-        width: width as usize,
-        pitch: width as usize * 4,
-        height: height as usize,
-        format: turbojpeg::PixelFormat::BGRA,
-    };
-    compressor.compress_to_vec(image).unwrap_or_default()
+/// Undo premultiplied alpha and convert BGRA → RGBA in-place.
+fn unpremultiply_bgra_to_rgba(data: &mut [u8]) {
+    static RECIP: std::sync::LazyLock<[u16; 256]> = std::sync::LazyLock::new(|| {
+        let mut table = [0u16; 256];
+        for a in 1..256 {
+            table[a] = ((255 * 256) / a) as u16;
+        }
+        table
+    });
+    let recip = &*RECIP;
+
+    for pixel in data.chunks_exact_mut(4) {
+        let a = pixel[3] as usize;
+        if a == 255 {
+            pixel.swap(0, 2);
+        } else if a == 0 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+        } else {
+            let r = recip[a];
+            let b = ((pixel[0] as u16 * r) >> 8).min(255) as u8;
+            let g = ((pixel[1] as u16 * r) >> 8).min(255) as u8;
+            let rv = ((pixel[2] as u16 * r) >> 8).min(255) as u8;
+            pixel[0] = rv;
+            pixel[1] = g;
+            pixel[2] = b;
+        }
+    }
+}
+
+/// Encode BGRA pixel data to QOI with alpha.
+fn encode_qoi(bgra_data: &mut [u8], width: u32, height: u32) -> Vec<u8> {
+    unpremultiply_bgra_to_rgba(bgra_data);
+    qoi::encode_to_vec(bgra_data, width, height).unwrap_or_default()
 }
 
 /// Start the capture loop in a dedicated thread.
@@ -220,7 +245,7 @@ struct RawFrame {
 fn run_capture_session(
     hwnd: HWND,
     fps: u32,
-    quality: u8,
+    _quality: u8,
     capture_cursor: bool,
     frame_tx: &watch::Sender<Arc<Vec<u8>>>,
     config: &crate::config::SharedConfig,
@@ -296,19 +321,15 @@ fn run_capture_session(
     let encode_frame_tx = frame_tx.clone();
     let encode_debug = debug.clone();
     let encode_handle = std::thread::spawn(move || {
-        let mut compressor = turbojpeg::Compressor::new().expect("failed to create JPEG compressor");
-        let _ = compressor.set_quality(quality as i32);
-        let _ = compressor.set_subsamp(turbojpeg::Subsamp::Sub2x2);
-
         let mut frame_count: u64 = 0;
         let mut log_timer = std::time::Instant::now();
 
-        while let Ok(raw) = raw_rx.recv() {
-            let jpeg = encode_jpeg_with(&mut compressor, &raw.bgra_data, raw.width, raw.height);
+        while let Ok(mut raw) = raw_rx.recv() {
+            let encoded = encode_qoi(&mut raw.bgra_data, raw.width, raw.height);
             let t_encode = raw.t0.elapsed();
 
-            if !jpeg.is_empty() {
-                let _ = encode_frame_tx.send(Arc::new(jpeg));
+            if !encoded.is_empty() {
+                let _ = encode_frame_tx.send(Arc::new(encoded));
             }
 
             frame_count += 1;

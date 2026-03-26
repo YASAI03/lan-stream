@@ -55,7 +55,7 @@
             max-width: 100%;
             max-height: calc(100vh - 60px);
             border-radius: 4px;
-            background: #0f0f23;
+            background: repeating-conic-gradient(#808080 0% 25%, #c0c0c0 0% 50%) 0 0 / 20px 20px;
         }
     </style>
 </head>
@@ -77,25 +77,99 @@
     </header>
     <div class="container">
         <span id="stream-status">接続中...</span>
-        <img id="stream" src="/raw" alt="Stream">
+        <canvas id="stream"></canvas>
     </div>
     <script>
-        const img = document.getElementById('stream');
+        // Minimal QOI decoder
+        function decodeQOI(buf) {
+            const view = new DataView(buf);
+            if (view.getUint32(0) !== 0x716F6966) return null;
+            const w = view.getUint32(4);
+            const h = view.getUint32(8);
+            const pixels = new Uint8ClampedArray(w * h * 4);
+            const index = new Uint8Array(64 * 4);
+            let r = 0, g = 0, b = 0, a = 255;
+            let pos = 14, pxPos = 0, end = buf.byteLength - 8;
+            const data = new Uint8Array(buf);
+            while (pos < end && pxPos < pixels.length) {
+                const b1 = data[pos++];
+                if (b1 === 0xFE) {
+                    r = data[pos++]; g = data[pos++]; b = data[pos++];
+                } else if (b1 === 0xFF) {
+                    r = data[pos++]; g = data[pos++]; b = data[pos++]; a = data[pos++];
+                } else {
+                    const op = b1 & 0xC0;
+                    if (op === 0x00) {
+                        const idx = (b1 & 0x3F) * 4;
+                        r = index[idx]; g = index[idx+1]; b = index[idx+2]; a = index[idx+3];
+                    } else if (op === 0x40) {
+                        r = (r + ((b1 >> 4) & 3) - 2) & 255;
+                        g = (g + ((b1 >> 2) & 3) - 2) & 255;
+                        b = (b + (b1 & 3) - 2) & 255;
+                    } else if (op === 0x80) {
+                        const b2 = data[pos++];
+                        const dg = (b1 & 0x3F) - 32;
+                        r = (r + dg - 8 + ((b2 >> 4) & 0x0F)) & 255;
+                        g = (g + dg) & 255;
+                        b = (b + dg - 8 + (b2 & 0x0F)) & 255;
+                    } else {
+                        let run = (b1 & 0x3F) + 1;
+                        while (run-- > 0 && pxPos < pixels.length) {
+                            pixels[pxPos++] = r; pixels[pxPos++] = g;
+                            pixels[pxPos++] = b; pixels[pxPos++] = a;
+                        }
+                        const idx2 = ((r * 3 + g * 5 + b * 7 + a * 11) & 63) * 4;
+                        index[idx2] = r; index[idx2+1] = g; index[idx2+2] = b; index[idx2+3] = a;
+                        continue;
+                    }
+                }
+                const idx = ((r * 3 + g * 5 + b * 7 + a * 11) & 63) * 4;
+                index[idx] = r; index[idx+1] = g; index[idx+2] = b; index[idx+3] = a;
+                pixels[pxPos++] = r; pixels[pxPos++] = g;
+                pixels[pxPos++] = b; pixels[pxPos++] = a;
+            }
+            return { width: w, height: h, data: pixels };
+        }
+
+        const canvas = document.getElementById('stream');
+        const ctx = canvas.getContext('2d');
         const streamStatus = document.getElementById('stream-status');
 
-        img.onload = function() {
-            streamStatus.textContent = '配信中';
-            streamStatus.className = 'connected';
-        };
-        img.onerror = function() {
-            streamStatus.textContent = '切断';
-            streamStatus.className = 'error';
-            setTimeout(() => {
-                streamStatus.textContent = '再接続中...';
-                streamStatus.className = '';
-                img.src = '/raw?' + Date.now();
-            }, 3000);
-        };
+        function connect() {
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${proto}//${location.host}/ws`);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                streamStatus.textContent = '配信中';
+                streamStatus.className = 'connected';
+            };
+
+            ws.onmessage = (e) => {
+                const img = decodeQOI(e.data);
+                if (!img) return;
+                if (canvas.width !== img.width || canvas.height !== img.height) {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                }
+                const imageData = new ImageData(img.data, img.width, img.height);
+                ctx.putImageData(imageData, 0, 0);
+            };
+
+            ws.onclose = () => {
+                streamStatus.textContent = '切断';
+                streamStatus.className = 'error';
+                setTimeout(() => {
+                    streamStatus.textContent = '再接続中...';
+                    streamStatus.className = '';
+                    connect();
+                }, 3000);
+            };
+
+            ws.onerror = () => { ws.close(); };
+        }
+
+        connect();
 
         (function(){
             async function pollHealth(){
