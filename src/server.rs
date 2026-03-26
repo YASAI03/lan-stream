@@ -28,6 +28,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/raw", get(raw_handler))
         .route("/ws", get(ws_handler))
         .route("/js/stream.js", get(stream_js_handler))
+        .route("/wasm/decoder.wasm", get(wasm_handler))
         .route("/config", get(config_page_handler))
         .route("/debug", get(debug_page_handler))
         .route("/api/config", get(get_config_handler).post(post_config_handler))
@@ -52,6 +53,10 @@ async fn raw_handler() -> Html<&'static str> {
 
 async fn stream_js_handler() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "application/javascript")], include_str!("stream.js"))
+}
+
+async fn wasm_handler() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "application/wasm")], include_bytes!("decoder.wasm").as_slice())
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {

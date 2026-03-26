@@ -1,5 +1,41 @@
 // QOI decoder + WebGL/Canvas2D renderer (shared by index.html and raw_page.html)
 
+// --- WASM decoder loader ---
+let wasmDecode = null;
+let decoderName = 'JS';
+
+async function initWasmDecoder() {
+    try {
+        const { instance } = await WebAssembly.instantiateStreaming(fetch('/wasm/decoder.wasm'));
+        const exports = instance.exports;
+        const memory = exports.memory;
+
+        wasmDecode = function(buf) {
+            const input = new Uint8Array(buf);
+            const inputPtr = exports.alloc_input(input.byteLength);
+            new Uint8Array(memory.buffer, inputPtr, input.byteLength).set(input);
+
+            const ok = exports.decode(input.byteLength);
+            if (!ok) return null;
+
+            const w = exports.get_width();
+            const h = exports.get_height();
+            const outPtr = exports.get_output_ptr();
+            // View into WASM memory — valid until next decode call
+            return { width: w, height: h, data: new Uint8ClampedArray(memory.buffer, outPtr, w * h * 4) };
+        };
+        decoderName = 'WASM';
+    } catch (e) {
+        console.warn('WASM decoder unavailable, using JS fallback:', e);
+    }
+}
+
+function decodeFrame(buf) {
+    return wasmDecode ? wasmDecode(buf) : decodeQOI(buf);
+}
+
+// --- JS decoder (fallback) ---
+
 function decodeQOI(buf) {
     const view = new DataView(buf);
     if (view.getUint32(0) !== 0x716F6966) return null;

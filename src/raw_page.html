@@ -23,7 +23,7 @@
             ws.binaryType = 'arraybuffer';
 
             ws.onmessage = (e) => {
-                const img = decodeQOI(e.data);
+                const img = decodeFrame(e.data);
                 if (!img) return;
                 renderer.draw(img.width, img.height, img.data);
             };
@@ -32,7 +32,10 @@
             ws.onerror = () => { ws.close(); };
         }
 
-        connect();
+        (async () => {
+            await initWasmDecoder();
+            connect();
+        })();
     </script>
 </body>
 </html>
