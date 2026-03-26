@@ -281,9 +281,9 @@
                     const t0=performance.now();
                     await fetch('/api/ping');
                     const rtt=Math.round(performance.now()-t0);
-                    document.getElementById('ping-text').textContent=rtt+'ms';
+                    document.getElementById('ping-text').textContent='server: '+rtt+'ms';
                 }catch(e){
-                    document.getElementById('ping-text').textContent='--';
+                    document.getElementById('ping-text').textContent='server: --';
                 }
             }
             setInterval(measurePing,3000);

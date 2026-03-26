@@ -70,7 +70,7 @@
             </nav>
         </div>
         <div class="header-right">
-            <span id="ping-text" style="font-size:12px;color:#8b949e;margin-right:12px"></span>
+            <span id="ping-text" style="font-size:12px;color:#8b949e;margin-right:12px">server: -- | decode: --</span>
             <span class="health-dot" id="health-dot"></span>
             <span id="health-text">確認中...</span>
         </div>
@@ -135,6 +135,8 @@
         const ctx = canvas.getContext('2d');
         const streamStatus = document.getElementById('stream-status');
 
+        let lastDecodeMs = 0;
+
         function connect() {
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -146,6 +148,7 @@
             };
 
             ws.onmessage = (e) => {
+                const t0 = performance.now();
                 const img = decodeQOI(e.data);
                 if (!img) return;
                 if (canvas.width !== img.width || canvas.height !== img.height) {
@@ -154,6 +157,7 @@
                 }
                 const imageData = new ImageData(img.data, img.width, img.height);
                 ctx.putImageData(imageData, 0, 0);
+                lastDecodeMs = performance.now() - t0;
             };
 
             ws.onclose = () => {
@@ -206,9 +210,10 @@
                     const t0=performance.now();
                     await fetch('/api/ping');
                     const rtt=Math.round(performance.now()-t0);
-                    document.getElementById('ping-text').textContent=rtt+'ms';
+                    const dec=lastDecodeMs.toFixed(1);
+                    document.getElementById('ping-text').textContent='server: '+rtt+'ms | decode: '+dec+'ms';
                 }catch(e){
-                    document.getElementById('ping-text').textContent='--';
+                    document.getElementById('ping-text').textContent='server: -- | decode: --';
                 }
             }
             setInterval(measurePing,3000);
