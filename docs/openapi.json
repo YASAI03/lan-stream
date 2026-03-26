@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "lan-stream API",
-    "description": "LAN内ウィンドウキャプチャ配信サーバー。Windows Graphics Capture APIでウィンドウをキャプチャし、MJPEG over HTTPでストリーミングする。",
+    "description": "LAN内ウィンドウキャプチャ配信サーバー。Windows Graphics Capture APIでウィンドウをキャプチャし、QOI over WebSocketでストリーミングする。",
     "version": "0.1.0",
     "license": {
       "name": "MIT"
@@ -18,7 +18,7 @@
     "/": {
       "get": {
         "summary": "ストリームビューア",
-        "description": "MJPEG ストリームを埋め込んだHTMLビューアページ。ストリームの接続状態をリアルタイム表示し、切断時は自動再接続する。",
+        "description": "WebSocket経由のQOIストリームを埋め込んだHTMLビューアページ。WASMデコーダー（JSフォールバック付き）でデコードし、WebGL（Canvas2Dフォールバック付き）でレンダリング。切断時は自動再接続。",
         "operationId": "getStreamViewer",
         "tags": ["Pages"],
         "responses": {
@@ -37,30 +37,17 @@
     },
     "/raw": {
       "get": {
-        "summary": "MJPEG生ストリーム",
-        "description": "multipart/x-mixed-replace 形式のMJPEGストリーム。同時接続は1クライアントまで。2クライアント目は503を返す。ブラウザの<img>タグで直接表示可能。",
-        "operationId": "getRawStream",
-        "tags": ["Stream"],
+        "summary": "代替ストリームビューア",
+        "description": "メインビューアの代替HTMLページ。同じWebSocketストリームに接続する。",
+        "operationId": "getRawViewer",
+        "tags": ["Pages"],
         "responses": {
           "200": {
-            "description": "MJPEGストリーム",
+            "description": "HTMLページ",
             "content": {
-              "multipart/x-mixed-replace": {
+              "text/html": {
                 "schema": {
-                  "type": "string",
-                  "format": "binary",
-                  "description": "boundary=frame で区切られたJPEGフレームの連続"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "別のクライアントが既に接続中",
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string",
-                  "example": "Another client is already connected"
+                  "type": "string"
                 }
               }
             }
@@ -68,10 +55,23 @@
         }
       }
     },
+    "/ws": {
+      "get": {
+        "summary": "WebSocketストリーム",
+        "description": "WebSocketにアップグレードしてQOIエンコードされたフレームをバイナリメッセージで配信する。複数クライアント同時接続対応。毎秒テキストメッセージでクライアント個別のビットレート（bps）をJSON形式で通知する。",
+        "operationId": "getWebSocketStream",
+        "tags": ["Stream"],
+        "responses": {
+          "101": {
+            "description": "WebSocketにアップグレード。バイナリメッセージ: QOIフレーム、テキストメッセージ: {\"bitrate_bps\": number}"
+          }
+        }
+      }
+    },
     "/config": {
       "get": {
         "summary": "設定ページ",
-        "description": "キャプチャ設定（ウィンドウ選択、FPS、品質、カーソル表示）とサーバー設定を変更するUIページ。",
+        "description": "キャプチャ設定（ウィンドウ選択、FPS、カーソル表示）とサーバー設定を変更するUIページ。",
         "operationId": "getConfigPage",
         "tags": ["Pages"],
         "responses": {
@@ -91,7 +91,7 @@
     "/debug": {
       "get": {
         "summary": "デバッグダッシュボード",
-        "description": "パフォーマンスメトリクス（FPS、フレーム処理時間の内訳）、チャート、サーバーログをリアルタイム表示するダッシュボード。",
+        "description": "パフォーマンスメトリクス（FPS、フレーム処理時間の内訳、ビットレート）、チャート、サーバーログをリアルタイム表示するダッシュボード。",
         "operationId": "getDebugPage",
         "tags": ["Pages"],
         "responses": {
@@ -165,11 +165,6 @@
                     "value": {
                       "error": "target_fps must be between 1 and 120"
                     }
-                  },
-                  "invalid_quality": {
-                    "value": {
-                      "error": "quality must be between 1 and 100"
-                    }
                   }
                 }
               }
@@ -214,7 +209,7 @@
     "/api/debug": {
       "get": {
         "summary": "デバッグ情報・パフォーマンスメトリクス",
-        "description": "最新のパフォーマンスメトリクス、メトリクス履歴（最大300件、約15分間）、サーバーログ、稼働時間を返す。",
+        "description": "最新のパフォーマンスメトリクス、メトリクス履歴（最大300件、約15分間）、サーバーログ、稼働時間、WebSocket接続数・ビットレートを返す。",
         "operationId": "getDebug",
         "tags": ["API"],
         "responses": {
@@ -234,7 +229,7 @@
     "/api/health": {
       "get": {
         "summary": "ヘルスチェック",
-        "description": "キャプチャの稼働状態、クライアント接続有無、現在のFPSを返す軽量エンドポイント。全ページの共通ヘッダーで使用。",
+        "description": "キャプチャの稼働状態、クライアント接続数、現在のFPS、ビットレートを返す軽量エンドポイント。全ページの共通ヘッダーで使用。",
         "operationId": "getHealth",
         "tags": ["API"],
         "responses": {
@@ -244,6 +239,32 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ping": {
+      "get": {
+        "summary": "Ping",
+        "description": "レイテンシ計測用の軽量エンドポイント。クライアントUIでサーバーRTTを表示するために使用。",
+        "operationId": "getPing",
+        "tags": ["API"],
+        "responses": {
+          "200": {
+            "description": "Pong応答",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pong": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  }
                 }
               }
             }
@@ -268,7 +289,7 @@
       },
       "CaptureConfig": {
         "type": "object",
-        "required": ["window_title", "target_fps", "quality", "capture_cursor"],
+        "required": ["window_title", "target_fps", "capture_cursor"],
         "properties": {
           "window_title": {
             "type": "string",
@@ -281,13 +302,6 @@
             "maximum": 120,
             "description": "目標フレームレート",
             "example": 30
-          },
-          "quality": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100,
-            "description": "JPEG圧縮品質",
-            "example": 80
           },
           "capture_cursor": {
             "type": "boolean",
@@ -356,6 +370,14 @@
           "uptime_secs": {
             "type": "number",
             "description": "サーバー稼働時間（秒）"
+          },
+          "ws_clients": {
+            "type": "integer",
+            "description": "WebSocket接続中のクライアント数"
+          },
+          "ws_bitrate_bps": {
+            "type": "integer",
+            "description": "WebSocket全クライアント合計ビットレート（bps）"
           }
         }
       },
@@ -378,6 +400,10 @@
             "type": "number",
             "description": "実測FPS"
           },
+          "skipped": {
+            "type": "integer",
+            "description": "スキップされたフレーム数"
+          },
           "gpu_copy_ms": {
             "type": "number",
             "description": "GPU→ステージングテクスチャコピー時間（ms）"
@@ -392,7 +418,7 @@
           },
           "encode_ms": {
             "type": "number",
-            "description": "JPEGエンコード時間（ms）"
+            "description": "QOIエンコード時間（ms）"
           },
           "total_ms": {
             "type": "number",
@@ -422,7 +448,11 @@
           },
           "client_connected": {
             "type": "boolean",
-            "description": "MJPEGストリームにクライアントが接続中か"
+            "description": "WebSocketストリームにクライアントが1つ以上接続中か"
+          },
+          "clients": {
+            "type": "integer",
+            "description": "WebSocket接続中のクライアント数"
           },
           "fps": {
             "oneOf": [
@@ -430,6 +460,22 @@
               { "type": "null" }
             ],
             "description": "現在の実測FPS（キャプチャ未稼働時はnull）"
+          },
+          "target_fps": {
+            "type": "integer",
+            "description": "設定された目標FPS"
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "スキップされたフレーム数"
+          },
+          "idle": {
+            "type": "boolean",
+            "description": "ストリームがアイドル状態か（FPSが目標を下回り、かつフレームスキップ発生時）"
+          },
+          "ws_bitrate_bps": {
+            "type": "integer",
+            "description": "WebSocket全クライアント合計ビットレート（bps）"
           }
         }
       },
@@ -451,7 +497,7 @@
     },
     {
       "name": "Stream",
-      "description": "MJPEGストリーム配信"
+      "description": "QOI over WebSocket ストリーム配信"
     },
     {
       "name": "API",
