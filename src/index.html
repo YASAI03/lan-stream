@@ -72,6 +72,7 @@
         <div class="header-right">
             <span id="renderer-text" style="font-size:11px;color:#4a9eff;margin-right:4px;background:rgba(74,158,255,0.1);padding:2px 6px;border-radius:3px"></span>
             <span id="decoder-text" style="font-size:11px;color:#3fb950;margin-right:8px;background:rgba(63,185,80,0.1);padding:2px 6px;border-radius:3px"></span>
+            <span id="bitrate-text" style="font-size:11px;color:#d29922;margin-right:8px;background:rgba(210,153,34,0.1);padding:2px 6px;border-radius:3px"></span>
             <span id="ping-text" style="font-size:12px;color:#8b949e;margin-right:12px">server: -- | decode: --</span>
             <span class="health-dot" id="health-dot"></span>
             <span id="health-text">確認中...</span>
@@ -90,6 +91,12 @@
 
         let lastDecodeMs = 0;
 
+        function formatBitrate(bps) {
+            if (bps >= 1000000) return (bps / 1000000).toFixed(1) + ' Mbps';
+            if (bps >= 1000) return (bps / 1000).toFixed(0) + ' kbps';
+            return bps + ' bps';
+        }
+
         function connect() {
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -101,6 +108,15 @@
             };
 
             ws.onmessage = (e) => {
+                if (typeof e.data === 'string') {
+                    try {
+                        const meta = JSON.parse(e.data);
+                        if (meta.bitrate_bps !== undefined) {
+                            document.getElementById('bitrate-text').textContent = formatBitrate(meta.bitrate_bps);
+                        }
+                    } catch(ex) {}
+                    return;
+                }
                 const t0 = performance.now();
                 const img = decodeFrame(e.data);
                 if (!img) return;
@@ -111,6 +127,7 @@
             ws.onclose = () => {
                 streamStatus.textContent = '切断';
                 streamStatus.className = 'error';
+                document.getElementById('bitrate-text').textContent = '';
                 setTimeout(() => {
                     streamStatus.textContent = '再接続中...';
                     streamStatus.className = '';

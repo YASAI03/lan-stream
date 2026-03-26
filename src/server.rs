@@ -64,7 +64,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
         let cfg = state.config.read().await;
         cfg.capture.target_fps
     };
-    ws.on_upgrade(move |socket| stream::ws_stream(socket, state.frame_rx.clone(), fps))
+    ws.on_upgrade(move |socket| stream::ws_stream(socket, state.frame_rx.clone(), fps, state.debug.clone()))
 }
 
 async fn get_config_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -110,7 +110,15 @@ async fn debug_page_handler() -> Html<&'static str> {
 }
 
 async fn debug_handler(State(state): State<AppState>) -> impl IntoResponse {
-    Json(state.debug.snapshot())
+    let snapshot = state.debug.snapshot();
+    Json(serde_json::json!({
+        "latest": snapshot.latest,
+        "history": snapshot.history,
+        "logs": snapshot.logs,
+        "uptime_secs": snapshot.uptime_secs,
+        "ws_clients": stream::client_count(),
+        "ws_bitrate_bps": stream::total_bitrate_bps(),
+    }))
 }
 
 async fn ping_handler() -> impl IntoResponse {
@@ -139,5 +147,6 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
         "target_fps": target_fps,
         "skipped": skipped,
         "idle": idle,
+        "ws_bitrate_bps": stream::total_bitrate_bps(),
     }))
 }
