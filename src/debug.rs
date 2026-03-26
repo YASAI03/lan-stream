@@ -11,6 +11,7 @@ pub struct PerfMetrics {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
+    pub skipped: u64,
     pub gpu_copy_ms: f64,
     pub map_ms: f64,
     pub readback_ms: f64,
@@ -50,7 +51,7 @@ impl DebugStore {
         })))
     }
 
-    pub fn push_metrics(&self, width: u32, height: u32, fps: f64, gpu_copy_ms: f64, map_ms: f64, readback_ms: f64, encode_ms: f64, total_ms: f64) {
+    pub fn push_metrics(&self, width: u32, height: u32, fps: f64, skipped: u64, gpu_copy_ms: f64, map_ms: f64, readback_ms: f64, encode_ms: f64, total_ms: f64) {
         let mut inner = self.0.lock().unwrap();
         let timestamp = inner.start_time.elapsed().as_secs_f64();
         let m = PerfMetrics {
@@ -58,6 +59,7 @@ impl DebugStore {
             width,
             height,
             fps,
+            skipped,
             gpu_copy_ms,
             map_ms,
             readback_ms,

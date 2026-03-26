@@ -241,6 +241,7 @@ struct RawFrame {
     bgra_data: Vec<u8>,
     width: u32,
     height: u32,
+    skipped: u64,
     t0: std::time::Instant,
     t_copy: std::time::Duration,
     t_map: std::time::Duration,
@@ -328,6 +329,7 @@ fn run_capture_session(
     let encode_debug = debug.clone();
     let encode_handle = std::thread::spawn(move || {
         let mut frame_count: u64 = 0;
+        let mut skip_count: u64 = 0;
         let mut log_timer = std::time::Instant::now();
 
         while let Ok(mut raw) = raw_rx.recv() {
@@ -339,6 +341,7 @@ fn run_capture_session(
             }
 
             frame_count += 1;
+            skip_count += raw.skipped;
             if log_timer.elapsed() >= std::time::Duration::from_secs(3) {
                 let fps_actual = frame_count as f64 / log_timer.elapsed().as_secs_f64();
                 let gpu_copy_ms = raw.t_copy.as_secs_f64() * 1000.0;
@@ -346,18 +349,25 @@ fn run_capture_session(
                 let readback_ms = (raw.t_readback - raw.t_map).as_secs_f64() * 1000.0;
                 let encode_ms = (t_encode - raw.t_readback).as_secs_f64() * 1000.0;
                 let total_ms = raw.t0.elapsed().as_secs_f64() * 1000.0;
+                let skip_info = if skip_count > 0 {
+                    format!(" skipped={skip_count}")
+                } else {
+                    String::new()
+                };
                 eprintln!(
-                    "[perf] {}x{} fps={fps_actual:.1} | gpu_copy={gpu_copy_ms:.1}ms map={map_ms:.1}ms readback={readback_ms:.1}ms encode={encode_ms:.1}ms total={total_ms:.1}ms",
+                    "[perf] {}x{} fps={fps_actual:.1}{skip_info} | gpu_copy={gpu_copy_ms:.1}ms map={map_ms:.1}ms readback={readback_ms:.1}ms encode={encode_ms:.1}ms total={total_ms:.1}ms",
                     raw.width, raw.height,
                 );
-                encode_debug.push_metrics(raw.width, raw.height, fps_actual, gpu_copy_ms, map_ms, readback_ms, encode_ms, total_ms);
+                encode_debug.push_metrics(raw.width, raw.height, fps_actual, skip_count, gpu_copy_ms, map_ms, readback_ms, encode_ms, total_ms);
                 frame_count = 0;
+                skip_count = 0;
                 log_timer = std::time::Instant::now();
             }
         }
     });
 
     let mut config_check_timer = std::time::Instant::now();
+    let mut skip_count: u64 = 0;
 
     let result = (|| -> Result<()> {
         loop {
@@ -479,15 +489,20 @@ fn run_capture_session(
 
                 // Send to encode thread (non-blocking: swap buffer ownership)
                 let send_buf = std::mem::replace(buf, Vec::with_capacity(total_bytes));
+                let frame_skipped = skip_count;
+                skip_count = 0;
                 let _ = raw_tx.try_send(RawFrame {
                     bgra_data: send_buf,
                     width: fw,
                     height: fh,
+                    skipped: frame_skipped,
                     t0,
                     t_copy,
                     t_map,
                     t_readback,
                 });
+            } else {
+                skip_count += 1;
             }
 
             // Frame rate limiting

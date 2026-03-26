@@ -130,13 +130,14 @@
                     const dot=document.getElementById('health-dot');
                     const txt=document.getElementById('health-text');
                     if(h.capturing){
-                        const fpsBelowTarget=h.fps && h.target_fps && h.fps < h.target_fps * 0.9;
+                        const fpsBelowTarget=h.fps && h.target_fps && h.fps < h.target_fps * 0.9 && !h.idle;
+                        const fpsText=h.fps?' ('+h.fps.toFixed(1)+'/'+h.target_fps+' fps'+(h.idle?' 静止':'')+')'  :'';
                         if(h.client_connected){
                             dot.className='health-dot '+(fpsBelowTarget?'warning':'streaming');
-                            txt.textContent='配信中'+(h.fps?' ('+h.fps.toFixed(1)+'/'+h.target_fps+' fps)':'');
+                            txt.textContent='配信中'+fpsText;
                         }else{
                             dot.className='health-dot '+(fpsBelowTarget?'warning':'capturing');
-                            txt.textContent='キャプチャ中'+(h.fps?' ('+h.fps.toFixed(1)+'/'+h.target_fps+' fps)':'');
+                            txt.textContent='キャプチャ中'+fpsText;
                         }
                     }else{
                         dot.className='health-dot stopped';

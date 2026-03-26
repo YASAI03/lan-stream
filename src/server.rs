@@ -123,10 +123,14 @@ async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
     });
     let client_connected = stream::is_stream_active();
     let fps = snapshot.latest.as_ref().map(|m| m.fps);
+    let skipped = snapshot.latest.as_ref().map(|m| m.skipped).unwrap_or(0);
+    let idle = skipped > 0 && fps.unwrap_or(0.0) < target_fps as f64 * 0.9;
     Json(serde_json::json!({
         "capturing": capturing,
         "client_connected": client_connected,
         "fps": fps,
         "target_fps": target_fps,
+        "skipped": skipped,
+        "idle": idle,
     }))
 }
