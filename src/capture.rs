@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::watch;
+use tokio::sync::broadcast;
 use windows::{
     core::*,
     Graphics::Capture::*,
@@ -164,16 +164,52 @@ fn unpremultiply_bgra_to_rgba(data: &mut [u8]) {
     }
 }
 
-/// Encode BGRA pixel data to QOI with alpha.
-fn encode_qoi(bgra_data: &mut [u8], width: u32, height: u32) -> Vec<u8> {
+/// Frame type prefix bytes for the wire protocol.
+const FRAME_KEY: u8 = 0x00;
+const FRAME_DELTA: u8 = 0x01;
+
+/// Encode BGRA pixel data to QOI with delta compression.
+///
+/// If `prev_rgba` is empty or has a different length, emits a keyframe (prefix `0x00`)
+/// and saves the current pixels as the reference.
+/// Otherwise, emits a delta frame (prefix `0x01`): XOR current with previous,
+/// QOI-encode the XOR result (highly compressible when little changed),
+/// and update `prev_rgba` to the current frame.
+fn encode_qoi_delta(bgra_data: &mut [u8], width: u32, height: u32, prev_rgba: &mut Vec<u8>) -> Vec<u8> {
     unpremultiply_bgra_to_rgba(bgra_data);
-    qoi::encode_to_vec(bgra_data, width, height).unwrap_or_default()
+
+    let is_keyframe = prev_rgba.len() != bgra_data.len();
+
+    if is_keyframe {
+        // Keyframe: save current pixels and encode as-is
+        prev_rgba.resize(bgra_data.len(), 0);
+        prev_rgba.copy_from_slice(bgra_data);
+
+        let qoi = qoi::encode_to_vec(bgra_data, width, height).unwrap_or_default();
+        let mut out = Vec::with_capacity(1 + qoi.len());
+        out.push(FRAME_KEY);
+        out.extend(qoi);
+        out
+    } else {
+        // Delta: XOR in-place while updating prev_rgba simultaneously
+        for i in 0..bgra_data.len() {
+            let current = bgra_data[i];
+            bgra_data[i] ^= prev_rgba[i];
+            prev_rgba[i] = current;
+        }
+
+        let qoi = qoi::encode_to_vec(bgra_data, width, height).unwrap_or_default();
+        let mut out = Vec::with_capacity(1 + qoi.len());
+        out.push(FRAME_DELTA);
+        out.extend(qoi);
+        out
+    }
 }
 
 /// Start the capture loop in a dedicated thread.
-/// Sends QOI frames via the watch channel.
+/// Sends QOI frames via the broadcast channel.
 pub fn start_capture_thread(
-    frame_tx: watch::Sender<Arc<Vec<u8>>>,
+    frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
     config: crate::config::SharedConfig,
     debug: crate::debug::DebugStore,
     stop_signal: Arc<AtomicBool>,
@@ -187,7 +223,7 @@ pub fn start_capture_thread(
 }
 
 fn run_capture_loop(
-    frame_tx: watch::Sender<Arc<Vec<u8>>>,
+    frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
     config: crate::config::SharedConfig,
     debug: &crate::debug::DebugStore,
     stop_signal: &AtomicBool,
@@ -197,9 +233,9 @@ fn run_capture_loop(
             return Ok(());
         }
         // Read current config
-        let (window_title, fps, capture_cursor) = {
+        let (window_title, fps, capture_cursor, keyframe_interval) = {
             let cfg = config.blocking_read();
-            (cfg.capture.window_title.clone(), cfg.capture.target_fps, cfg.capture.capture_cursor)
+            (cfg.capture.window_title.clone(), cfg.capture.target_fps, cfg.capture.capture_cursor, cfg.capture.keyframe_interval)
         };
 
         if window_title.is_empty() {
@@ -224,7 +260,7 @@ fn run_capture_loop(
             eprintln!("{msg}");
         }
 
-        match run_capture_session(hwnd, fps, capture_cursor, &frame_tx, &config, debug, stop_signal) {
+        match run_capture_session(hwnd, fps, capture_cursor, keyframe_interval, &frame_tx, &config, debug, stop_signal) {
             Ok(()) => {} // session ended cleanly (config changed)
             Err(e) => {
                 let msg = format!("Capture session error: {e}, restarting...");
@@ -252,7 +288,8 @@ fn run_capture_session(
     hwnd: HWND,
     fps: u32,
     capture_cursor: bool,
-    frame_tx: &watch::Sender<Arc<Vec<u8>>>,
+    keyframe_interval: u32,
+    frame_tx: &broadcast::Sender<Arc<Vec<u8>>>,
     config: &crate::config::SharedConfig,
     debug: &crate::debug::DebugStore,
     stop_signal: &AtomicBool,
@@ -332,8 +369,19 @@ fn run_capture_session(
         let mut skip_count: u64 = 0;
         let mut log_timer = std::time::Instant::now();
 
+        // Delta encoding state
+        let mut prev_rgba: Vec<u8> = Vec::new();
+        let ki = keyframe_interval.max(1) as u64;
+        let mut frames_since_key: u64 = ki; // force first frame as keyframe
+
         while let Ok(mut raw) = raw_rx.recv() {
-            let encoded = encode_qoi(&mut raw.bgra_data, raw.width, raw.height);
+            frames_since_key += 1;
+            if frames_since_key >= ki {
+                prev_rgba.clear(); // triggers keyframe in encode_qoi_delta
+                frames_since_key = 0;
+            }
+
+            let encoded = encode_qoi_delta(&mut raw.bgra_data, raw.width, raw.height, &mut prev_rgba);
             let t_encode = raw.t0.elapsed();
 
             if !encoded.is_empty() {

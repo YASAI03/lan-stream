@@ -146,6 +146,9 @@
         <div id="window-list" style="display:none"></div>
         <label for="target_fps">ターゲットFPS (1-120)</label>
         <input type="number" id="target_fps" min="1" max="120">
+        <label for="keyframe_interval">キーフレーム間隔（フレーム数, 1-600）</label>
+        <input type="number" id="keyframe_interval" min="1" max="600">
+        <div style="font-size:12px;color:#666;margin-top:-8px;margin-bottom:12px">30fps で 60 = 約2秒ごとにキーフレーム。小さいほど新規接続が早く映るが帯域は増える</div>
         <div style="margin-top:4px">
             <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
                 <input type="checkbox" id="capture_cursor" style="width:auto;margin:0">
@@ -183,6 +186,7 @@
             const cfg = await res.json();
             document.getElementById('window_title').value = cfg.capture.window_title;
             document.getElementById('target_fps').value = cfg.capture.target_fps;
+            document.getElementById('keyframe_interval').value = cfg.capture.keyframe_interval;
             document.getElementById('capture_cursor').checked = cfg.capture.capture_cursor;
             document.getElementById('host').value = cfg.server.host;
             document.getElementById('port').value = cfg.server.port;
@@ -194,6 +198,7 @@
                     window_title: document.getElementById('window_title').value,
                     target_fps: parseInt(document.getElementById('target_fps').value, 10),
                     capture_cursor: document.getElementById('capture_cursor').checked,
+                    keyframe_interval: parseInt(document.getElementById('keyframe_interval').value, 10),
                 },
                 server: {
                     host: document.getElementById('host').value,

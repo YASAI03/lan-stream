@@ -6,7 +6,7 @@ mod stream;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{watch, RwLock};
+use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() {
@@ -29,8 +29,8 @@ async fn run_server() -> bool {
     let debug_store = debug::DebugStore::new();
     let restart_signal = Arc::new(tokio::sync::Notify::new());
 
-    // watch channel: initial empty frame
-    let (frame_tx, frame_rx) = watch::channel(Arc::new(Vec::<u8>::new()));
+    // broadcast channel: all clients receive every frame in order (required for delta encoding)
+    let (frame_tx, _) = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(128);
 
     // Stop signal for capture thread
     let stop_signal = Arc::new(AtomicBool::new(false));
@@ -39,14 +39,14 @@ async fn run_server() -> bool {
     let capture_config = shared_config.clone();
     let capture_debug = debug_store.clone();
     let capture_stop = stop_signal.clone();
-    let capture_handle = capture::start_capture_thread(frame_tx, capture_config, capture_debug, capture_stop);
+    let capture_handle = capture::start_capture_thread(frame_tx.clone(), capture_config, capture_debug, capture_stop);
 
     debug_store.push_log(format!("Server starting on http://{host}:{port}"));
 
     // Build HTTP server
     let state = server::AppState {
         config: shared_config,
-        frame_rx,
+        frame_tx: frame_tx.clone(),
         debug: debug_store,
     };
     let app = server::create_router(state);

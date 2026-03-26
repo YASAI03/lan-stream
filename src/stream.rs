@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
-use tokio::sync::watch;
+use tokio::sync::broadcast;
 
 use crate::debug::DebugStore;
 
@@ -19,26 +19,42 @@ pub fn total_bitrate_bps() -> u64 {
 /// WebSocket stream handler. Supports multiple clients.
 pub async fn ws_stream(
     mut socket: WebSocket,
-    frame_rx: watch::Receiver<Arc<Vec<u8>>>,
-    fps: u32,
+    frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
+    _fps: u32,
     debug: DebugStore,
 ) {
     let mut guard = ClientGuard::new();
     debug.push_log(format!("Client connected (total: {})", client_count()));
 
-    let mut rx = frame_rx;
-    let frame_interval = std::time::Duration::from_millis((1000 / fps.max(1)) as u64);
+    let mut rx = frame_tx.subscribe();
+    // New clients must wait for a keyframe before delta frames make sense
+    let mut need_keyframe = true;
     let mut bytes_since_report: u64 = 0;
     let mut last_report = tokio::time::Instant::now();
 
     loop {
-        if rx.changed().await.is_err() {
-            break;
-        }
+        let frame = match rx.recv().await {
+            Ok(frame) => frame,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                // Missed frames — delta chain is broken, skip until next keyframe
+                debug.push_log(format!("Client lagged, missed {n} frames, waiting for keyframe"));
+                need_keyframe = true;
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
 
-        let frame = rx.borrow_and_update().clone();
         if frame.is_empty() {
             continue;
+        }
+
+        // Skip delta frames until we receive a keyframe to resync
+        if need_keyframe {
+            if frame.first() == Some(&0x00) {
+                need_keyframe = false;
+            } else {
+                continue;
+            }
         }
 
         let len = frame.len() as u64;
@@ -61,8 +77,6 @@ pub async fn ws_stream(
                 break;
             }
         }
-
-        tokio::time::sleep(frame_interval).await;
     }
 
     let bps = guard.bitrate;

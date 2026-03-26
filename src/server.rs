@@ -8,7 +8,6 @@ use axum::{
     Json,
 };
 use axum::http::StatusCode;
-use tokio::sync::watch;
 
 use crate::capture;
 use crate::config::{self, SharedConfig};
@@ -18,7 +17,7 @@ use crate::stream;
 #[derive(Clone)]
 pub struct AppState {
     pub config: SharedConfig,
-    pub frame_rx: watch::Receiver<Arc<Vec<u8>>>,
+    pub frame_tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
     pub debug: DebugStore,
 }
 
@@ -64,7 +63,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
         let cfg = state.config.read().await;
         cfg.capture.target_fps
     };
-    ws.on_upgrade(move |socket| stream::ws_stream(socket, state.frame_rx.clone(), fps, state.debug.clone()))
+    ws.on_upgrade(move |socket| stream::ws_stream(socket, state.frame_tx.clone(), fps, state.debug.clone()))
 }
 
 async fn get_config_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -80,6 +79,11 @@ async fn post_config_handler(
     if new_config.capture.target_fps == 0 || new_config.capture.target_fps > 120 {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
             "error": "target_fps must be between 1 and 120"
+        }))).into_response();
+    }
+    if new_config.capture.keyframe_interval == 0 || new_config.capture.keyframe_interval > 600 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": "keyframe_interval must be between 1 and 600"
         }))).into_response();
     }
     // Save to file

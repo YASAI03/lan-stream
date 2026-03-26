@@ -1,8 +1,14 @@
-// QOI decoder + WebGL/Canvas2D renderer (shared by index.html and raw_page.html)
+// QOI delta decoder + WebGL/Canvas2D renderer (shared by index.html and raw_page.html)
+//
+// Wire format: each WebSocket binary message is prefixed with 1 byte:
+//   0x00 = keyframe  (full QOI image)
+//   0x01 = delta     (XOR'd QOI image — apply XOR to previous frame)
 
 // --- WASM decoder loader ---
-let wasmDecode = null;
+let wasmDecodeKey = null;
+let wasmDecodeDelta = null;
 let decoderName = 'JS';
+let jsPrevPixels = null; // JS-fallback delta state
 
 async function initWasmDecoder() {
     try {
@@ -10,20 +16,29 @@ async function initWasmDecoder() {
         const exports = instance.exports;
         const memory = exports.memory;
 
-        wasmDecode = function(buf) {
-            const input = new Uint8Array(buf);
-            const inputPtr = exports.alloc_input(input.byteLength);
-            new Uint8Array(memory.buffer, inputPtr, input.byteLength).set(input);
-
-            const ok = exports.decode(input.byteLength);
-            if (!ok) return null;
-
+        function readResult() {
             const w = exports.get_width();
             const h = exports.get_height();
             const outPtr = exports.get_output_ptr();
-            // View into WASM memory — valid until next decode call
             return { width: w, height: h, data: new Uint8ClampedArray(memory.buffer, outPtr, w * h * 4) };
+        }
+
+        wasmDecodeKey = function(buf) {
+            const input = new Uint8Array(buf);
+            const inputPtr = exports.alloc_input(input.byteLength);
+            new Uint8Array(memory.buffer, inputPtr, input.byteLength).set(input);
+            if (!exports.decode(input.byteLength)) return null;
+            return readResult();
         };
+
+        wasmDecodeDelta = function(buf) {
+            const input = new Uint8Array(buf);
+            const inputPtr = exports.alloc_input(input.byteLength);
+            new Uint8Array(memory.buffer, inputPtr, input.byteLength).set(input);
+            if (!exports.decode_delta(input.byteLength)) return null;
+            return readResult();
+        };
+
         decoderName = 'WASM';
     } catch (e) {
         console.warn('WASM decoder unavailable, using JS fallback:', e);
@@ -31,7 +46,38 @@ async function initWasmDecoder() {
 }
 
 function decodeFrame(buf) {
-    return wasmDecode ? wasmDecode(buf) : decodeQOI(buf);
+    const view = new Uint8Array(buf);
+    if (view.length < 2) return null;
+
+    const frameType = view[0];
+    const qoiBuf = buf.slice(1);
+
+    if (frameType === 0x00) {
+        // Keyframe
+        if (wasmDecodeKey) {
+            return wasmDecodeKey(qoiBuf);
+        } else {
+            const frame = decodeQOI(qoiBuf);
+            if (!frame) return null;
+            jsPrevPixels = new Uint8ClampedArray(frame.data);
+            return frame;
+        }
+    } else if (frameType === 0x01) {
+        // Delta frame
+        if (wasmDecodeDelta) {
+            return wasmDecodeDelta(qoiBuf);
+        } else {
+            if (!jsPrevPixels) return null; // no keyframe yet — skip
+            const frame = decodeQOI(qoiBuf);
+            if (!frame) return null;
+            for (let i = 0; i < frame.data.length; i++) {
+                frame.data[i] ^= jsPrevPixels[i];
+                jsPrevPixels[i] = frame.data[i];
+            }
+            return frame;
+        }
+    }
+    return null;
 }
 
 // --- JS decoder (fallback) ---

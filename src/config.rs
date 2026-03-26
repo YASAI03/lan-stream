@@ -17,10 +17,16 @@ pub struct CaptureConfig {
     pub target_fps: u32,
     #[serde(default = "default_capture_cursor")]
     pub capture_cursor: bool,
+    #[serde(default = "default_keyframe_interval")]
+    pub keyframe_interval: u32,
 }
 
 fn default_capture_cursor() -> bool {
     true
+}
+
+fn default_keyframe_interval() -> u32 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +42,7 @@ impl Default for Config {
                 window_title: String::new(),
                 target_fps: 30,
                 capture_cursor: true,
+                keyframe_interval: 60,
             },
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),

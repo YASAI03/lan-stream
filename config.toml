@@ -2,6 +2,7 @@
 window_title = "SSOverlay"
 target_fps = 30
 capture_cursor = false
+keyframe_interval = 60
 
 [server]
 host = "0.0.0.0"
