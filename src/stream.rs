@@ -1,25 +1,23 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
 use tokio::sync::watch;
 
-static STREAM_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-pub fn is_stream_active() -> bool {
-    STREAM_ACTIVE.load(Ordering::SeqCst)
+pub fn client_count() -> usize {
+    CLIENT_COUNT.load(Ordering::Relaxed)
 }
 
-/// WebSocket stream handler. Only one client at a time.
+/// WebSocket stream handler. Supports multiple clients.
 pub async fn ws_stream(
     mut socket: WebSocket,
     frame_rx: watch::Receiver<Arc<Vec<u8>>>,
     fps: u32,
 ) {
-    if STREAM_ACTIVE.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return;
-    }
+    CLIENT_COUNT.fetch_add(1, Ordering::Relaxed);
+    let _guard = ClientGuard;
 
-    let _guard = StreamGuard;
     let mut rx = frame_rx;
     let frame_interval = std::time::Duration::from_millis((1000 / fps.max(1)) as u64);
 
@@ -41,11 +39,11 @@ pub async fn ws_stream(
     }
 }
 
-/// Guard to reset STREAM_ACTIVE when the stream drops
-struct StreamGuard;
+/// Guard to decrement CLIENT_COUNT when the stream drops
+struct ClientGuard;
 
-impl Drop for StreamGuard {
+impl Drop for ClientGuard {
     fn drop(&mut self) {
-        STREAM_ACTIVE.store(false, Ordering::SeqCst);
+        CLIENT_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
 }
