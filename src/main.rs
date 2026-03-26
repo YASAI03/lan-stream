@@ -5,6 +5,7 @@ mod server;
 mod stream;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{watch, RwLock};
 
 #[tokio::main]
@@ -31,10 +32,14 @@ async fn run_server() -> bool {
     // watch channel: initial empty frame
     let (frame_tx, frame_rx) = watch::channel(Arc::new(Vec::<u8>::new()));
 
+    // Stop signal for capture thread
+    let stop_signal = Arc::new(AtomicBool::new(false));
+
     // Start capture thread
     let capture_config = shared_config.clone();
     let capture_debug = debug_store.clone();
-    let _capture_handle = capture::start_capture_thread(frame_tx, capture_config, capture_debug);
+    let capture_stop = stop_signal.clone();
+    let capture_handle = capture::start_capture_thread(frame_tx, capture_config, capture_debug, capture_stop);
 
     debug_store.push_log(format!("Server starting on http://{host}:{port}"));
 
@@ -43,7 +48,6 @@ async fn run_server() -> bool {
         config: shared_config,
         frame_rx,
         debug: debug_store,
-        restart_signal: restart_signal.clone(),
     };
     let app = server::create_router(state);
 
@@ -61,6 +65,10 @@ async fn run_server() -> bool {
         })
         .await
         .expect("Server error");
+
+    // Stop capture thread before restarting
+    stop_signal.store(true, Ordering::SeqCst);
+    let _ = capture_handle.join();
 
     true
 }

@@ -20,7 +20,6 @@ pub struct AppState {
     pub config: SharedConfig,
     pub frame_rx: watch::Receiver<Arc<Vec<u8>>>,
     pub debug: DebugStore,
-    pub restart_signal: Arc<tokio::sync::Notify>,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -73,12 +72,6 @@ async fn post_config_handler(
             "error": "target_fps must be between 1 and 120"
         }))).into_response();
     }
-    // Check if restart is needed (target_fps changed)
-    let needs_restart = {
-        let cfg = state.config.read().await;
-        cfg.capture.target_fps != new_config.capture.target_fps
-    };
-
     // Save to file
     if let Err(e) = config::save_config_to_file(&new_config) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
@@ -92,19 +85,8 @@ async fn post_config_handler(
         *cfg = new_config.clone();
     }
 
-    if needs_restart {
-        state.debug.push_log("target_fps changed, restarting server...".to_string());
-        let signal = state.restart_signal.clone();
-        // Signal restart after a short delay to allow the response to be sent
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            signal.notify_one();
-        });
-    }
-
     Json(serde_json::json!({
         "config": new_config,
-        "restarting": needs_restart,
     })).into_response()
 }
 

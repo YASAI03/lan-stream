@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::watch;
 use windows::{
     core::*,
@@ -170,15 +171,15 @@ fn encode_qoi(bgra_data: &mut [u8], width: u32, height: u32) -> Vec<u8> {
 }
 
 /// Start the capture loop in a dedicated thread.
-/// Sends JPEG frames via the watch channel.
+/// Sends QOI frames via the watch channel.
 pub fn start_capture_thread(
     frame_tx: watch::Sender<Arc<Vec<u8>>>,
     config: crate::config::SharedConfig,
     debug: crate::debug::DebugStore,
+    stop_signal: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        // Graphics Capture API requires a dispatcher queue on this thread
-        if let Err(e) = run_capture_loop(frame_tx, config, &debug) {
+        if let Err(e) = run_capture_loop(frame_tx, config, &debug, &stop_signal) {
             debug.push_log(format!("Capture error: {e}"));
             eprintln!("Capture error: {e}");
         }
@@ -189,8 +190,12 @@ fn run_capture_loop(
     frame_tx: watch::Sender<Arc<Vec<u8>>>,
     config: crate::config::SharedConfig,
     debug: &crate::debug::DebugStore,
+    stop_signal: &AtomicBool,
 ) -> Result<()> {
     loop {
+        if stop_signal.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         // Read current config
         let (window_title, fps, capture_cursor) = {
             let cfg = config.blocking_read();
@@ -219,7 +224,7 @@ fn run_capture_loop(
             eprintln!("{msg}");
         }
 
-        match run_capture_session(hwnd, fps, capture_cursor, &frame_tx, &config, debug) {
+        match run_capture_session(hwnd, fps, capture_cursor, &frame_tx, &config, debug, stop_signal) {
             Ok(()) => {} // session ended cleanly (config changed)
             Err(e) => {
                 let msg = format!("Capture session error: {e}, restarting...");
@@ -249,6 +254,7 @@ fn run_capture_session(
     frame_tx: &watch::Sender<Arc<Vec<u8>>>,
     config: &crate::config::SharedConfig,
     debug: &crate::debug::DebugStore,
+    stop_signal: &AtomicBool,
 ) -> Result<()> {
     let (d3d_device, d3d_context) = create_d3d11_device()?;
     let direct3d_device = create_direct3d_device(&d3d_device)?;
@@ -299,7 +305,8 @@ fn run_capture_session(
 
     session.StartCapture()?;
 
-    let frame_interval = std::time::Duration::from_millis((1000 / fps.max(1)) as u64);
+    let mut frame_interval = std::time::Duration::from_millis((1000 / fps.max(1)) as u64);
+    let mut current_fps = fps;
     let mut current_title = config.blocking_read().capture.window_title.clone();
 
     // Double-buffered staging textures
@@ -358,11 +365,25 @@ fn run_capture_session(
 
             // Check config every 1 second
             if config_check_timer.elapsed() >= std::time::Duration::from_secs(1) {
+                if stop_signal.load(Ordering::SeqCst) {
+                    session.Close()?;
+                    frame_pool.Close()?;
+                    return Ok(());
+                }
                 let cfg = config.blocking_read();
                 if cfg.capture.window_title != current_title {
                     session.Close()?;
                     frame_pool.Close()?;
                     return Ok(());
+                }
+                if cfg.capture.target_fps != current_fps {
+                    current_fps = cfg.capture.target_fps;
+                    frame_interval = std::time::Duration::from_millis(
+                        (1000 / current_fps.max(1)) as u64,
+                    );
+                    let msg = format!("FPS changed to {current_fps}");
+                    debug.push_log(msg.clone());
+                    eprintln!("{msg}");
                 }
                 current_title = cfg.capture.window_title.clone();
                 config_check_timer = std::time::Instant::now();
